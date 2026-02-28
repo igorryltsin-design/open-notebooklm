@@ -1,0 +1,135 @@
+.upload-done {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0;
+}
+
+.upload-done-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  flex-shrink: 1;
+}
+
+.upload-delete-btn {
+  color: var(--danger);
+}
+
+.upload-delete-btn:hover:not(:disabled) {
+  background: rgba(255, 107, 107, 0.2);
+  border: 1px solid var(--danger);
+}
+
+.upload-label {
+  color: var(--text-muted);
+}
+
+.text-muted {
+  color: var(--text-muted);
+}
+
+.compact-upload-panel {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  margin-bottom: 0;
+}
+
+.compact-dropzone {
+  padding: 0.9rem 0.35rem;
+  min-height: 160px;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+}
+
+.compact-dropzone .drop-icon {
+  margin-bottom: 0.05rem;
+}
+
+.compact-dropzone p {
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: nowrap;
+}
+
+.mode-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 0.8rem;
+}
+
+.mode-toggle button:last-child {
+  grid-column: 1 / -1;
+}
+
+.mode-toggle button {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.2;
+  min-height: 2.3rem;
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+}
+
+.dropzone {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  padding: 2rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  background: rgba(20, 30, 45, 0.5);
+}
+
+.dropzone p {
+  overflow-wrap: anywhere;
+}
+
+.dropzone:hover,
+.dropzone.drag-over {
+  border-color: var(--accent);
+  background: rgba(109, 212, 200, 0.08);
+}
+
+.drop-icon {
+  font-size: 1.9rem;
+  color: var(--accent);
+  margin-bottom: 0.3rem;
+  font-weight: 300;
+}
+
+.url-input-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+@media (max-width: 1200px) {
+  .mode-toggle {
+    grid-template-columns: 1fr;
+  }
+
+  .mode-toggle button:last-child {
+    grid-column: auto;
+  }
+}
+
+.url-input-row input {
+  flex: 1;
+}
+
+:root[data-theme="day"] .dropzone {
+  background: rgba(245, 250, 255, 0.96);
+}
+
+:root[data-theme="day"] .dropzone:hover,
+:root[data-theme="day"] .dropzone.drag-over {
+  background: rgba(228, 241, 248, 0.95);
+}

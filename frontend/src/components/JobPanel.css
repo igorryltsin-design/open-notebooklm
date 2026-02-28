@@ -1,0 +1,147 @@
+.job-panel {
+  display: grid;
+  gap: 0.62rem;
+}
+
+.job-panel .job-header {
+  margin-bottom: 0.08rem;
+}
+
+.job-header-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+}
+
+.job-panel h3 {
+  color: var(--accent);
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+.job-header-sub {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  flex-wrap: wrap;
+}
+
+.job-id-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(126, 154, 190, 0.22);
+  border-radius: 999px;
+  background: rgba(12, 18, 27, 0.42);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  padding: 0.14rem 0.45rem;
+}
+
+.progress-label {
+  display: block;
+  text-align: right;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+}
+
+.job-runtime-meta {
+  margin-top: 0.18rem;
+  display: flex;
+  gap: 0.32rem;
+  flex-wrap: wrap;
+}
+
+.job-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(126, 154, 190, 0.2);
+  border-radius: 999px;
+  background: rgba(12, 18, 27, 0.4);
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  padding: 0.16rem 0.5rem;
+}
+
+.job-error {
+  color: var(--danger);
+  margin-top: 0.15rem;
+  font-size: 0.86rem;
+}
+
+.job-toolbar {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.job-artifact-actions {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.job-downloads {
+  border: 1px solid rgba(126, 154, 190, 0.16);
+  border-radius: 10px;
+  background: rgba(12, 18, 27, 0.28);
+  padding: 0.22rem 0.52rem 0.52rem;
+}
+
+.job-downloads summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 650;
+  padding: 0.26rem 0.04rem;
+}
+
+.job-downloads summary::-webkit-details-marker {
+  display: none;
+}
+
+.download-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.download-btn {
+  display: inline-block;
+  padding: 0.48rem 0.75rem;
+  background: linear-gradient(135deg, #6dd4c8, #56c7b8);
+  color: #07272a;
+  border: 1px solid rgba(109, 212, 200, 0.55);
+  border-radius: 8px;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 0.82rem;
+  transition: filter 0.2s, transform 0.15s;
+}
+
+.download-btn:hover {
+  filter: brightness(1.03);
+  transform: translateY(-1px);
+}
+
+.download-btn:visited {
+  color: #07272a;
+}
+
+:root[data-theme="day"] .job-id-chip,
+:root[data-theme="day"] .job-meta-chip,
+:root[data-theme="day"] .job-downloads {
+  background: rgba(236, 243, 252, 0.95);
+}
+
+@media (max-width: 900px) {
+  .job-header-main {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

@@ -1,0 +1,53 @@
+# Данные приложения: по умолчанию ./data относительно папки, откуда запускают docker compose.
+# Чтобы документы не пропадали при запуске из другой папки, задайте в .env абсолютный путь, например:
+#   DATA_PATH=/Users/вас/path/to/open-notebooklm/data
+services:
+  # --- ChromaDB vector store ---
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"   # хост 8001 (8000 часто занят локальным Chroma/другим сервисом)
+    volumes:
+      - ${DATA_PATH:-./data}/index:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+
+  # --- FastAPI backend ---
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ${DATA_PATH:-./data}:/data
+      # Монтируем код приложения, чтобы правки в .py подхватывались без пересборки образа
+      - ./backend/app:/app/app
+    environment:
+      - LMSTUDIO_BASE_URL=${LMSTUDIO_BASE_URL:-http://host.docker.internal:1234/v1}
+      - LMSTUDIO_MODEL=${LMSTUDIO_MODEL:-local-model}
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - DATA_DIR=/data
+      - PIPER_BINARY=piper
+      - PIPER_VOICES_DIR=/opt/piper-voices
+      - SILERO_MODELS_DIR=/opt/silero-models
+      - MUSIC_ASSETS_DIR=/opt/audio-assets
+      - CONFIG_YAML=/data/config.yaml
+      - OPENBLAS_NUM_THREADS=1
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - NUMEXPR_NUM_THREADS=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - chroma
+
+  # --- React frontend (nginx) ---
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend

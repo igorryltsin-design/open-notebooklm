@@ -1,0 +1,28 @@
+.git
+.gitignore
+.env
+.pytest_cache
+__pycache__
+.venv
+venv
+backend/.venv
+backend/.pytest_cache
+frontend/node_modules
+frontend/dist
+dist
+data
+data-amd64-test
+instance
+
+# Local exports / archives
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+*.rar
+
+# Keep local optional media assets included in backend image build
+!media/
+!media/audio/
+!media/audio/**

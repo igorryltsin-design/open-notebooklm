@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node / frontend build
+node_modules/
+frontend/node_modules/
+frontend/dist/
+dist/
+
+# Environment
+.env
+
+# OS / editors
+.DS_Store
+Thumbs.db
+
+# Runtime data and local state
+data/**
+!data/.gitkeep
+!data/README.md
+instance/
+data-amd64-test/
+
+# Local artifacts and exports
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.mp3
+*.wav
+*.m4a
+*.flac
+*.ogg
+*.aac
+open-notebooklm-amd64-images.tar
+
+# Keep media folder structure and docs, ignore heavy local audio assets
+media/audio/**
+!media/audio/README.md

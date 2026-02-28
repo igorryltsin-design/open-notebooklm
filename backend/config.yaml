@@ -1,0 +1,85 @@
+lmstudio:
+  base_url: http://localhost:1234/v1
+  model: google/gemma-3-4b
+  temperature: 0.4
+  max_tokens: 13056
+runtime:
+  local_only: true
+  allow_remote_url_ingest: true
+  allow_remote_llm_endpoint: true
+  job_max_parallel_default: 2
+  job_max_parallel_ingest: 1
+  job_max_parallel_audio: 1
+  job_max_parallel_batch: 1
+piper:
+  binary: ./piper_bin/piper
+  voices_dir: null
+  voices:
+    host:
+      model: ru_RU-irina-medium
+      speaker: '0'
+    guest1:
+      model: ru_RU-irina-medium
+      speaker: '0'
+    guest2:
+      model: ru_RU-dmitri-medium
+      speaker: '0'
+  available_voices:
+  - id: ru_RU-denis-medium
+    name: Денис (рус.)
+  - id: ru_RU-irina-medium
+    name: Ирина (рус.)
+  - id: ru_RU-dmitri-medium
+    name: Дмитрий (рус.)
+  - id: ru_RU-ruslan-medium
+    name: Руслан (рус.)
+  - id: en_US-lessac-medium
+    name: Lessac (англ.)
+silero:
+  voices:
+  - id: silero:aidar
+    name: Silero Aidar (рус.)
+  - id: silero:baya
+    name: Silero Baya (рус.)
+  - id: silero:kseniya
+    name: Silero Kseniya (рус.)
+  - id: silero:xenia
+    name: Silero Xenia (рус.)
+  - id: silero:eugene
+    name: Silero Eugene (рус.)
+music:
+  enabled: false
+  assets_dir: /opt/audio-assets
+  intro_file: intro.mp3
+  background_file: background.mp3
+  outro_file: outro.mp3
+  intro_volume: 0.85
+  background_volume: 0.1
+  outro_volume: 0.9
+postprocess:
+  enabled: false
+  loudnorm: true
+  compressor: true
+  limiter: true
+  target_lufs: -16.0
+  true_peak_db: -1.5
+  lra: 11.0
+style_profiles:
+- id: conversational
+  name: Разговорный
+  instruction: Тон дружелюбный и естественный, короткие реплики, простой язык.
+- id: educational
+  name: Образовательный
+  instruction: "Структурируй материал: тезис, объяснение, пример, вывод."
+- id: debate
+  name: Дебаты
+  instruction: Контраст позиций, аргументы и контраргументы, без токсичности.
+- id: interview
+  name: Интервью
+  instruction: Ведущий задаёт вопросы, гости дают развёрнутые ответы.
+- id: news
+  name: Новости
+  instruction: Информационный стиль, факты и контекст, минимум эмоций.
+- id: deepdive
+  name: Deep Dive
+  instruction: Глубокий аналитический разбор с причинно-следственными связями.

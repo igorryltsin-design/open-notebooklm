@@ -1,0 +1,33 @@
+Исследовательский ассистент: offline amd64 bundle
+=================================================
+
+Contents
+- open-notebooklm-amd64-images.tar (Docker images with all built layers)
+- docker-compose.target.yml
+- docs/archive/bundles/offline-amd64-bundle.txt
+
+Tested image tags inside images archive
+- open-notebooklm-backend:amd64
+- open-notebooklm-frontend:amd64
+- open-notebooklm-chroma:amd64
+
+Target machine prerequisites
+- Linux amd64
+- Docker Engine + docker compose plugin
+- No internet required for container start
+
+Run on target machine
+1) Extract bundle:
+   tar -xzf open-notebooklm-amd64-offline-bundle.tgz
+2) Load images:
+   docker load -i open-notebooklm-amd64-images.tar
+3) Start stack:
+   docker compose -f docker-compose.target.yml up -d
+4) Open UI:
+   http://localhost:3000
+
+Notes
+- Containers include backend/frontend/chroma and preloaded STT/TTS/embedding assets baked into backend image.
+- For LLM answers, backend uses LM Studio-compatible API by default:
+  LMSTUDIO_BASE_URL=http://host.docker.internal:1234/v1
+  Ensure local LLM endpoint/model is available on target machine if Q&A/podcast generation is required.

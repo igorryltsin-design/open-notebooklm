@@ -1,0 +1,17 @@
+services:
+  chroma:
+    platform: linux/amd64
+    image: chromadb/chroma:latest
+
+  backend:
+    platform: linux/amd64
+    image: open-notebooklm-backend:amd64
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+
+  frontend:
+    platform: linux/amd64
+    image: open-notebooklm-frontend:amd64
+    build:
+      context: ./frontend
