@@ -1397,12 +1397,12 @@ def _normalize_turn_outline(
         ).strip()
 
     target_total = max(2, total_turns)
-    current_total = sum(int(b.get("target_turns", 1) or 1) for b in normalized_blocks)
+    current_total = sum(_safe_int(b.get("target_turns"), default=1, min_value=1, max_value=12) for b in normalized_blocks)
     if current_total <= 0:
         current_total = len(normalized_blocks)
     scaled: list[int] = []
     for b in normalized_blocks:
-        turns = int(b.get("target_turns", 1) or 1)
+        turns = _safe_int(b.get("target_turns"), default=1, min_value=1, max_value=12)
         scaled_turns = max(1, round(turns * target_total / current_total))
         scaled.append(scaled_turns)
     diff = target_total - sum(scaled)
@@ -1461,7 +1461,7 @@ def _format_turn_outline_summary(outline: dict[str, Any], max_blocks: int = 8, m
     for i, b in enumerate(blocks, start=1):
         title = str(b.get("title") or f"Блок {i}")
         roles = ", ".join(str(r) for r in (b.get("role_order") or []))
-        turns = int(b.get("target_turns", 1) or 1)
+        turns = _safe_int(b.get("target_turns"), default=1, min_value=1, max_value=12)
         goal = _truncate_prompt_text(str(b.get("goal") or b.get("instruction") or ""), 140)
         parts.append(f"{i}. {title} [{turns} ход.] роли: {roles}. Цель: {goal}")
     return _truncate_prompt_text("\n".join(parts), max_chars)
@@ -1482,7 +1482,7 @@ def _expand_turn_outline_to_plan(
     total_blocks = len(blocks)
     for block_idx, block in enumerate(blocks, start=1):
         role_order = [r for r in (block.get("role_order") or []) if r in voices] or [voices[0]]
-        block_turns = max(1, int(block.get("target_turns", 1) or 1))
+        block_turns = _safe_int(block.get("target_turns"), default=1, min_value=1, max_value=12)
         for j in range(block_turns):
             role = role_order[j % len(role_order)]
             plan.append(
@@ -1526,6 +1526,12 @@ def _turn_outline_prompts(
     guest_names = [str(v).strip() for v in voices[1:] if str(v).strip()]
     guests_str = ", ".join(guest_names)
     max_blocks = min(8, max(3, minutes + 1))
+    knowledge_note = ""
+    if effective_knowledge_mode == "hybrid_model":
+        knowledge_note = (
+            "\nМожно добавлять внешние профессиональные гипотезы и критику сверх документа, "
+            "но такие пункты плана должны явно указывать, что это вне документа."
+        )
     system = (
         "Ты редактор структуры подкаста. Сначала спланируй выпуск, не пиши полный сценарий.\n"
         "Ответь ТОЛЬКО JSON-объектом без markdown и комментариев.\n"
@@ -1839,10 +1845,10 @@ def _turn_taking_prompts(
         block_title = str(current_block.get("block_title") or "")
         block_goal = str(current_block.get("block_goal") or "").strip()
         block_instruction = str(current_block.get("block_instruction") or "").strip()
-        block_idx = int(current_block.get("block_index") or 1)
-        blocks_total = int(current_block.get("blocks_total") or 1)
-        block_turn_idx = int(current_block.get("block_turn_index") or 1)
-        block_turns = int(current_block.get("block_turns") or 1)
+        block_idx = _safe_int(current_block.get("block_index"), default=1, min_value=1, max_value=99)
+        blocks_total = _safe_int(current_block.get("blocks_total"), default=1, min_value=1, max_value=99)
+        block_turn_idx = _safe_int(current_block.get("block_turn_index"), default=1, min_value=1, max_value=99)
+        block_turns = _safe_int(current_block.get("block_turns"), default=1, min_value=1, max_value=99)
         plan_clause += (
             f"Текущий блок плана: {block_idx}/{blocks_total} — {block_title}\n"
             f"Ход внутри блока: {block_turn_idx}/{block_turns}\n"
@@ -1906,6 +1912,7 @@ async def iter_podcast_script_turn_taking(
     """Generate a script incrementally, one line per turn."""
     voice_list = voices or ["host", "guest1", "guest2"]
     scenario_key, scenario_meta = _resolve_script_scenario(scenario)
+    effective_knowledge_mode = _effective_script_knowledge_mode(scenario_key, knowledge_mode)
     _validate_scenario_roles(scenario_key, voice_list)
     validate_role_llm_map(voice_list, role_llm_map)
     await validate_role_llm_map_preflight_all(voice_list, role_llm_map)

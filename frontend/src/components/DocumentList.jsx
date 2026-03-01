@@ -825,8 +825,8 @@ export default function DocumentList({
                       }
                       disabled={notebookBusy || notebookLoading}
                     >
-                      <option value="single_pass">Один проход (single-pass)</option>
-                      <option value="turn_taking">Пошагово по ролям (turn-taking)</option>
+                      <option value="single_pass">Один проход</option>
+                      <option value="turn_taking">Пошагово по ролям</option>
                     </select>
                   </label>
                   <label className="document-list-project-settings-toggle">

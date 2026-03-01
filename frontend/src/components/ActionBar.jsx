@@ -51,7 +51,7 @@ function clampMinutes(value) {
 }
 
 function generationModeLabel(mode) {
-  return mode === "turn_taking" ? "Пошагово по ролям (turn-taking)" : "Один проход (single-pass)";
+  return mode === "turn_taking" ? "Пошагово по ролям" : "Один проход";
 }
 
 function normalizeKnowledgeMode(raw) {
@@ -693,7 +693,7 @@ export default function ActionBar({
             type="button"
             className={`secondary small ${presetMode === "deep" ? "is-active" : ""}`.trim()}
             onClick={() => applyScriptPreset("deep")}
-            title="Более длинный выпуск с turn-taking режимом"
+            title="Более длинный выпуск с пошаговым режимом"
           >
             Глубоко
           </button>
@@ -971,8 +971,8 @@ export default function ActionBar({
           <label title="Режим генерации: один запрос ко всей сцене или пошаговая генерация по ролям">
             Режим генерации
             <select value={generationMode} onChange={(e) => setGenerationMode(e.target.value)}>
-              <option value="single_pass">Один проход (single-pass)</option>
-              <option value="turn_taking">Пошагово по ролям (turn-taking)</option>
+              <option value="single_pass">Один проход</option>
+              <option value="turn_taking">Пошагово по ролям</option>
             </select>
             <span className="style-hint">
               {generationMode === "turn_taking"

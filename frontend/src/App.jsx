@@ -68,6 +68,32 @@ function sameParticipants(a, b) {
   return true;
 }
 
+const NETWORK_ERROR_PATTERNS = [
+  "load failed",
+  "failed to fetch",
+  "networkerror when attempting to fetch resource",
+];
+
+const CANCELLATION_ERROR_PATTERNS = [
+  "aborterror",
+  "the user aborted a request",
+  "signal is aborted",
+  "request aborted",
+];
+
+function normalizeUiErrorMessage(message) {
+  const msg = String(message || "").trim();
+  if (!msg) return "";
+  const lowered = msg.toLowerCase();
+  if (CANCELLATION_ERROR_PATTERNS.some((pattern) => lowered.includes(pattern))) {
+    return "";
+  }
+  if (NETWORK_ERROR_PATTERNS.some((pattern) => lowered.includes(pattern))) {
+    return "Сетевая ошибка: не удалось загрузить данные. Проверьте подключение и повторите.";
+  }
+  return msg;
+}
+
 export default function App() {
   const [topbarOffset, setTopbarOffset] = useState(116);
   const [activeProjectContext, setActiveProjectContext] = useState(() => {
@@ -145,7 +171,7 @@ export default function App() {
   const [viewerError, setViewerError] = useState(null);
   const [autoIngesting, setAutoIngesting] = useState(false);
   function isIgnorableErrorMessage(msg) {
-    const t = String(msg || "").toLowerCase().trim();
+    const t = String(normalizeUiErrorMessage(msg) || "").toLowerCase().trim();
     if (!t) return true;
     if (t === "not found") return true;
     if (t.includes("\"detail\":\"not found\"")) return true;
@@ -162,6 +188,14 @@ export default function App() {
   const studioSourceRef = useRef(null);
   const settingsRef = useRef(null);
   const autoIngestSeqRef = useRef(0);
+  const handleUiError = useCallback((message) => {
+    const normalized = normalizeUiErrorMessage(message);
+    if (!normalized) {
+      setError(null);
+      return;
+    }
+    setError(normalized);
+  }, []);
 
   function scrollToRef(ref) {
     if (!ref?.current) return;
@@ -401,7 +435,7 @@ export default function App() {
       handleReset();
       setDocumentListRefresh((r) => r + 1);
     } catch (e) {
-      setError(e.message);
+      handleUiError(e?.message || "Не удалось удалить документ.");
     }
   }
 
@@ -428,7 +462,7 @@ export default function App() {
   }
 
   const handleViewerError = useCallback((message) => {
-    const msg = String(message || "").trim();
+    const msg = normalizeUiErrorMessage(message);
     if (!msg) {
       setViewerError(null);
       return;
@@ -468,7 +502,7 @@ export default function App() {
           ),
         );
       } catch (e) {
-        setError(e?.message || "Не удалось открыть существующий документ-дубликат.");
+        handleUiError(e?.message || "Не удалось открыть существующий документ-дубликат.");
       }
       return;
     }
@@ -500,7 +534,7 @@ export default function App() {
       setDocumentListRefresh((r) => r + 1);
     } catch (e) {
       if (autoIngestSeqRef.current !== seq) return;
-      setError(e?.message || "Не удалось выполнить автоиндексацию документа.");
+      handleUiError(e?.message || "Не удалось выполнить автоиндексацию документа.");
     } finally {
       if (autoIngestSeqRef.current === seq) {
         setAutoIngesting(false);
@@ -522,7 +556,7 @@ export default function App() {
       await addProjectPin(projectId, payload || {});
       setProjectNotebookRefresh((v) => v + 1);
     } catch (e) {
-      setError(e?.message || "Не удалось закрепить Q&A в notebook.");
+      handleUiError(e?.message || "Не удалось закрепить Q&A в notebook.");
       throw e;
     }
   }
@@ -813,7 +847,7 @@ export default function App() {
                 onUploaded={(id, name, meta) => {
                   void handleUploadedDocument(id, name, meta);
                 }}
-                onError={setError}
+                onError={handleUiError}
                 onScriptOnlyImported={handleScriptOnlyImported}
               />
             </section>
@@ -828,7 +862,7 @@ export default function App() {
                 externalSelectedDocumentIds={sourceSelectedDocumentIds}
                 activeProjectContext={activeProjectContext}
                 onPinQa={handlePinChatQa}
-                onError={setError}
+                onError={handleUiError}
                 liteMode
                 onSourceCitationOpen={handleOpenSourceCitation}
               />
@@ -882,7 +916,7 @@ export default function App() {
                 compact={!showSources}
                 showDocumentListWhenActive={showDocumentListWhenActive}
                 onUploaded={(id, name, meta) => { void handleUploadedDocument(id, name, meta); }}
-                onError={setError}
+                onError={handleUiError}
                 onReset={handleReset}
                 onDeleteDocument={documentId ? handleDeleteCurrentDocument : null}
                 onBackToList={documentId ? () => setShowDocumentListWhenActive((v) => !v) : null}
@@ -893,7 +927,7 @@ export default function App() {
                   documentListRefresh={documentListRefresh}
                   projectNotebookRefresh={projectNotebookRefresh}
                   onOpen={handleOpenDocument}
-                  onError={setError}
+                  onError={handleUiError}
                   onBatchJob={setBatchJobId}
                   onSelectionChange={setSourceSelectedDocumentIds}
                   onProjectContextChange={setActiveProjectContext}
@@ -920,7 +954,7 @@ export default function App() {
                 externalSelectedDocumentIds={sourceSelectedDocumentIds}
                 activeProjectContext={activeProjectContext}
                 onPinQa={handlePinChatQa}
-                onError={setError}
+                onError={handleUiError}
                 onSourceCitationOpen={handleOpenSourceCitation}
               />
             </section>
@@ -943,7 +977,7 @@ export default function App() {
                   onAudioJob={setAudioJobId}
                   onScriptSettingsChange={setPodcastScriptSettings}
                   projectDefaults={activeProjectContext?.settings || null}
-                  onError={setError}
+                  onError={handleUiError}
                 />
               </div>
             )}
@@ -969,7 +1003,7 @@ export default function App() {
                     documentId={documentId}
                     streamingRaw={streamingScript}
                     onScriptImported={setScript}
-                    onError={setError}
+                    onError={handleUiError}
                   />
                 </details>
               </div>

@@ -2466,6 +2466,9 @@ async def podcast_script_stream(document_id: str, body: PodcastScriptRequest):
                 yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
             except ValueError as e:
                 yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                # Keep SSE channel semantic even on unexpected backend failures.
+                yield f"data: {json.dumps({'error': f'Внутренняя ошибка turn-taking: {e}'}, ensure_ascii=False)}\n\n"
 
         return StreamingResponse(
             event_stream_turn_taking(),

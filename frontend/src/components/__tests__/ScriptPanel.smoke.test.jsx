@@ -113,6 +113,32 @@ describe("ScriptPanel smoke", () => {
     expect(await screen.findByText(/^вне документа$/i)).toBeInTheDocument();
   });
 
+  it("does not crash when switching from streaming state to ready script", async () => {
+    const view = render(
+      <ScriptPanel
+        documentId="doc-stream"
+        script={[]}
+        streamingRaw="<think>Промежуточное</think>Черновик"
+        onScriptImported={vi.fn()}
+        onError={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText(/Пишу скрипт/i)).toBeInTheDocument();
+
+    view.rerender(
+      <ScriptPanel
+        documentId="doc-stream"
+        script={[{ voice: "HOST", text: "Готовая реплика" }]}
+        streamingRaw=""
+        onScriptImported={vi.fn()}
+        onError={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Готовая реплика")).toBeInTheDocument();
+  });
+
   it("persists filters in session and shows empty filter state", async () => {
     const baseScript = [
       { voice: "HOST", text: "Первая реплика" },

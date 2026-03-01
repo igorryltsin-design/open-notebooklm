@@ -244,6 +244,8 @@ export default function ScriptPanel({ script, documentId, streamingRaw, onScript
   const [voiceFilter, setVoiceFilter] = useState("all");
   const [issuesOnly, setIssuesOnly] = useState(false);
   const hasPlayingPreview = Object.values(previewStatus).includes("playing");
+  const hasStreamingRaw = !!streamingRaw;
+  const hasScriptLines = Array.isArray(script) && script.length > 0;
 
   function stopCurrentPreview() {
     if (audioRef.current) {
@@ -513,42 +515,6 @@ export default function ScriptPanel({ script, documentId, streamingRaw, onScript
       cancelled = true;
     };
   }, [documentId, script]);
-
-  if (streamingRaw) {
-    const { answer, reasoning } = splitReasoning(streamingRaw);
-    return (
-      <div className="card script-panel">
-        <div className="script-panel-header">
-          <h3>Скрипт подкаста <span className="streaming-badge">Пишу скрипт…</span></h3>
-        </div>
-        <pre className="script-streaming-raw">{answer}</pre>
-        {reasoning && (
-          <details className="script-think">
-            <summary>Рассуждение модели</summary>
-            <pre className="script-think-body">{reasoning}</pre>
-          </details>
-        )}
-      </div>
-    );
-  }
-
-  if (!script || script.length === 0) {
-    return (
-      <div className="card script-panel">
-        <div className="script-panel-header">
-          <div className="script-panel-head-main">
-            <h3>Скрипт подкаста</h3>
-            <div className="script-panel-head-meta">
-              <span className="script-meta-chip">Реплик: 0</span>
-            </div>
-          </div>
-        </div>
-        <div className="script-empty is-compact">
-          Скрипт ещё не создан. Запустите шаг «3. Сгенерировать скрипт».
-        </div>
-      </div>
-    );
-  }
 
   function handleExport() {
     const blob = new Blob([JSON.stringify({ script }, null, 2)], { type: "application/json" });
@@ -855,6 +821,42 @@ export default function ScriptPanel({ script, documentId, streamingRaw, onScript
     if (voiceOptions.includes(voiceFilter)) return;
     setVoiceFilter("all");
   }, [voiceFilter, voiceOptions]);
+
+  if (hasStreamingRaw) {
+    const { answer, reasoning } = splitReasoning(streamingRaw);
+    return (
+      <div className="card script-panel">
+        <div className="script-panel-header">
+          <h3>Скрипт подкаста <span className="streaming-badge">Пишу скрипт…</span></h3>
+        </div>
+        <pre className="script-streaming-raw">{answer}</pre>
+        {reasoning && (
+          <details className="script-think">
+            <summary>Рассуждение модели</summary>
+            <pre className="script-think-body">{reasoning}</pre>
+          </details>
+        )}
+      </div>
+    );
+  }
+
+  if (!hasScriptLines) {
+    return (
+      <div className="card script-panel">
+        <div className="script-panel-header">
+          <div className="script-panel-head-main">
+            <h3>Скрипт подкаста</h3>
+            <div className="script-panel-head-meta">
+              <span className="script-meta-chip">Реплик: 0</span>
+            </div>
+          </div>
+        </div>
+        <div className="script-empty is-compact">
+          Скрипт ещё не создан. Запустите шаг «3. Сгенерировать скрипт».
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="card script-panel">
