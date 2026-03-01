@@ -72,6 +72,25 @@ class TurnTakingJsonStabilityTests(unittest.TestCase):
         lines = podcast_service._parse_script_json(raw, voices)
         self.assertEqual([ln.voice for ln in lines], voices)
 
+    def test_parse_script_json_strips_markdown_fence_and_parses_array(self):
+        """LLM often returns script wrapped in ```json ... ```; we must strip and parse."""
+        voices = ["Игорь", "Аня", "Максим"]
+        raw = """```json
+[
+  {"voice": "Игорь", "text": "Привет всем! Сегодня поговорим об отчёте по стеганографии."},
+  {"voice": "Аня", "text": "В отчёте указано: PSNR высокий, SSIM почти 1."},
+  {"voice": "Максим", "text": "Оценка риска Medium из-за умеренной загрузки LSB."}
+]
+```"""
+        lines = podcast_service._parse_script_json(raw, voices)
+        self.assertEqual(len(lines), 3)
+        self.assertEqual(lines[0].voice, "Игорь")
+        self.assertIn("стеганографии", lines[0].text)
+        self.assertEqual(lines[1].voice, "Аня")
+        self.assertIn("PSNR", lines[1].text)
+        self.assertEqual(lines[2].voice, "Максим")
+        self.assertIn("Medium", lines[2].text)
+
     def test_parse_turn_outline_json_normalizes_roles_and_scales_turns(self):
         voices = ["host", "guest1", "guest2"]
         raw = """

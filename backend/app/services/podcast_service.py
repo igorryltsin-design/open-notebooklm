@@ -2371,8 +2371,67 @@ def _normalize_voice_label_to_allowed(raw_voice: Any, voices: list[str]) -> str:
     return fallback
 
 
+def _strip_markdown_json_fence(text: str) -> str:
+    """Remove ```json or ``` wrapper from LLM output so we can parse the inner JSON."""
+    s = (text or "").strip()
+    if not s.startswith("```"):
+        return s
+    lines = s.split("\n")
+    if lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines)
+
+
+def _find_array_span(s: str) -> tuple[int, int] | None:
+    """Find span of the first top-level JSON array by bracket matching (ignores [ ] inside strings)."""
+    i = 0
+    n = len(s)
+    while i < n and s[i] != "[":
+        if s[i] == '"':
+            i += 1
+            while i < n:
+                if s[i] == "\\":
+                    i += 2
+                    continue
+                if s[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        i += 1
+    if i >= n:
+        return None
+    start = i
+    i += 1
+    depth = 1
+    while i < n and depth > 0:
+        if s[i] == '"':
+            i += 1
+            while i < n:
+                if s[i] == "\\":
+                    i += 2
+                    continue
+                if s[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if s[i] == "[":
+            depth += 1
+        elif s[i] == "]":
+            depth -= 1
+            if depth == 0:
+                return (start, i + 1)
+        i += 1
+    return None
+
+
 def _parse_script_json(raw: str, voices: list[str]) -> list[DialogueLine]:
     """Robustly extract dialogue JSON from LLM output."""
+    raw = _strip_markdown_json_fence(raw)
+
     def _normalize_item(item: dict[str, Any]) -> DialogueLine | None:
         if not isinstance(item, dict):
             return None
@@ -2425,6 +2484,9 @@ def _parse_script_json(raw: str, voices: list[str]) -> list[DialogueLine]:
             objs = re.findall(r"\{[^{}]*\}", s, flags=re.DOTALL)
             if objs:
                 s = "[" + ",".join(objs) + "]"
+        # Trailing comma before ] is invalid JSON but some LLMs emit it
+        s = re.sub(r",\s*\]", "]", s)
+        s = re.sub(r",\s*}", "}", s)
         return s
 
     def _looks_like_jsonish_script(s: str) -> bool:
@@ -2446,10 +2508,15 @@ def _parse_script_json(raw: str, voices: list[str]) -> list[DialogueLine]:
             )
         )
 
-    # Try to find JSON array in the output
-    match = re.search(r"\[.*\]", raw, re.DOTALL)
-    if match:
-        blob = match.group()
+    # If stripped content is exactly a JSON array, parse it directly
+    parsed = _parse_array_blob(raw)
+    if parsed:
+        return parsed
+
+    # Try to find JSON array in the output (bracket-aware so we don't cut at ] inside a string)
+    span = _find_array_span(raw)
+    if span is not None:
+        blob = raw[span[0] : span[1]]
         parsed = _parse_array_blob(blob)
         if parsed:
             return parsed

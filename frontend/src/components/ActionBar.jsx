@@ -64,6 +64,161 @@ function scenarioSupportsHybrid(rawScenario) {
   return key === "debate" || key === "critique";
 }
 
+function parseOutlineSafe(text) {
+  if (!text || typeof text !== "string") return null;
+  try {
+    const raw = JSON.parse(text);
+    if (!raw || typeof raw !== "object") return null;
+    const blocks = Array.isArray(raw.blocks) ? raw.blocks : [];
+    return {
+      episode_goal: String(raw.episode_goal ?? raw.goal ?? "").trim(),
+      blocks: blocks.map((b, i) => ({
+        title: String(b.title ?? `Блок ${i + 1}`).trim(),
+        goal: String(b.goal ?? "").trim(),
+        instruction: String(b.instruction ?? "").trim(),
+        role_order: Array.isArray(b.role_order) ? b.role_order.map(String) : [],
+        target_turns: Math.max(1, Math.min(99, parseInt(b.target_turns, 10) || 2)),
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function OutlineHumanForm({ text, onTextChange, onInvalidJson, onFocusField }) {
+  const plan = parseOutlineSafe(text);
+  const [localGoal, setLocalGoal] = useState("");
+  const [localBlocks, setLocalBlocks] = useState([]);
+
+  useEffect(() => {
+    const parsed = parseOutlineSafe(text);
+    if (parsed) {
+      setLocalGoal(parsed.episode_goal);
+      setLocalBlocks(parsed.blocks.map((b) => ({ ...b })));
+    }
+  }, [text]);
+
+  const applyChanges = (nextGoal, nextBlocks) => {
+    const raw = parseOutlineSafe(text);
+    if (!raw) return;
+    const out = {
+      episode_goal: nextGoal ?? localGoal,
+      blocks: (nextBlocks ?? localBlocks).map((b) => ({
+        title: b.title,
+        goal: b.goal,
+        instruction: b.instruction,
+        role_order: Array.isArray(b.role_order) ? b.role_order : String(b.role_order || "").split(",").map((s) => s.trim()).filter(Boolean),
+        target_turns: Math.max(1, Math.min(99, parseInt(b.target_turns, 10) || 2)),
+      })),
+    };
+    onTextChange(JSON.stringify(out, null, 2));
+  };
+
+  const updateBlock = (blockIndex, field, value) => {
+    const next = localBlocks.map((b, i) =>
+      i !== blockIndex ? b : { ...b, [field]: value }
+    );
+    setLocalBlocks(next);
+    applyChanges(localGoal, next);
+  };
+
+  const updateGoal = (value) => {
+    setLocalGoal(value);
+    applyChanges(value, localBlocks);
+  };
+
+  if (!plan) {
+    return (
+      <div className="outline-human-invalid">
+        <p>Не удалось прочитать план (некорректный JSON).</p>
+        <button type="button" className="secondary small" onClick={onInvalidJson}>
+          Перейти в JSON и исправить
+        </button>
+      </div>
+    );
+  }
+
+  const blocks = localBlocks.length ? localBlocks : plan.blocks;
+
+  const displayGoal = localGoal || plan?.episode_goal || "";
+
+  return (
+    <div className="outline-human-form">
+      <div className="outline-human-field">
+        <label>Цель выпуска</label>
+        <textarea
+          value={displayGoal}
+          onFocus={onFocusField}
+          onChange={(e) => updateGoal(e.target.value)}
+          rows={2}
+          placeholder="Кратко сформулируйте цель выпуска"
+        />
+      </div>
+      {blocks.map((block, idx) => (
+        <div key={idx} className="outline-human-block">
+          <div className="outline-human-block-title">Блок {idx + 1}: {block.title || "—"}</div>
+          <div className="outline-human-field">
+            <label>Название блока</label>
+            <input
+              type="text"
+              value={block.title}
+              onFocus={onFocusField}
+              onChange={(e) => updateBlock(idx, "title", e.target.value)}
+              placeholder="Например: Приветствие и представление"
+            />
+          </div>
+          <div className="outline-human-field">
+            <label>Цель блока</label>
+            <input
+              type="text"
+              value={block.goal}
+              onFocus={onFocusField}
+              onChange={(e) => updateBlock(idx, "goal", e.target.value)}
+              placeholder="Что должно быть достигнуто в этом блоке"
+            />
+          </div>
+          <div className="outline-human-field">
+            <label>Инструкция для генерации</label>
+            <textarea
+              value={block.instruction}
+              onFocus={onFocusField}
+              onChange={(e) => updateBlock(idx, "instruction", e.target.value)}
+              rows={3}
+              placeholder="Детальные указания для сценария"
+            />
+          </div>
+          <div className="outline-human-row">
+            <div className="outline-human-field">
+              <label>Порядок спикеров (через запятую)</label>
+              <input
+                type="text"
+                value={Array.isArray(block.role_order) ? block.role_order.join(", ") : String(block.role_order || "")}
+                onFocus={onFocusField}
+                onChange={(e) => {
+                  const arr = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                  updateBlock(idx, "role_order", arr);
+                }}
+                placeholder="Игорь, Аня, Максим"
+              />
+            </div>
+            <div className="outline-human-field outline-human-turns">
+              <label>Число реплик</label>
+              <input
+                type="number"
+                min={1}
+                max={99}
+                value={block.target_turns}
+                onFocus={onFocusField}
+                onChange={(e) => updateBlock(idx, "target_turns", e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ActionBar({
   documentId,
   ingested,
@@ -117,7 +272,9 @@ export default function ActionBar({
   const [scriptStatusMessage, setScriptStatusMessage] = useState("");
   const [promptDebug, setPromptDebug] = useState(null);
   const [outlineApproval, setOutlineApproval] = useState(null);
+  const [outlineViewMode, setOutlineViewMode] = useState("human"); // "human" | "json"
   const outlineAutoTriggeredRef = useRef(false);
+  const outlineEditingRef = useRef(false); // сбрасывается при открытии карточки; true = пользователь начал править → не автозапускать
   const projectDefaultsKeyRef = useRef("");
   const { job: ingestJobState, startPolling: startIngestPolling, reset: resetIngestPolling } = useJobPoller();
   const { job: audioJob, startPolling: startAudioPolling, reset: resetAudioPolling } = useJobPoller();
@@ -224,6 +381,7 @@ export default function ActionBar({
 
   useEffect(() => {
     if (!outlineApproval?.open || !outlineApproval.autoEnabled || outlineApproval.touched) return;
+    if (outlineEditingRef.current) return; // пользователь уже правит — не запускать по таймеру
     if (busy === "script") return;
     if (outlineApproval.countdown <= 0) {
       if (outlineAutoTriggeredRef.current) return;
@@ -335,6 +493,7 @@ export default function ActionBar({
       }
       const text = JSON.stringify(outline, null, 2);
       outlineAutoTriggeredRef.current = false;
+      outlineEditingRef.current = false;
       setOutlineApproval({
         open: true,
         text,
@@ -491,18 +650,24 @@ export default function ActionBar({
           }
         >
           <span className="step-btn-label">
-            {busy === "ingest"
+            {ingestActive && ingestJobState
+              ? (ingestJobState.progress_message
+                  ? `Индексация (${ingestProgress}%) · ${ingestJobState.progress_message}`
+                  : ingestProgress >= 3 && ingestProgress <= 12
+                    ? `Индексация (${ingestProgress}%) · обработка изображений`
+                    : `Индексация (${ingestProgress}%)`)
+              : busy === "ingest"
               ? "Запуск индексации…"
-              : ingestActive
-              ? `Индексация (${ingestProgress}%)`
               : ingested
               ? `Переиндексировать (${chunks} фрагментов)`
               : "1. Индексация"}
           </span>
-          {(busy === "ingest" || ingestJobState) && (
+          {(busy === "ingest" || ingestActive) && (
             <span
-              className={busy === "ingest" ? "step-progress is-indeterminate" : "step-progress"}
-              style={busy === "ingest" ? undefined : { width: `${ingestProgress}%` }}
+              className="step-progress"
+              style={{
+                width: `${Math.max(ingestProgress, 6)}%`,
+              }}
             />
           )}
         </button>
@@ -591,35 +756,78 @@ export default function ActionBar({
             <div>
               <strong>Предварительный план выпуска</strong>
               <div className="style-hint">
-                Проверьте и при необходимости поправьте JSON-план. Если не начнёте редактировать, генерация стартует автоматически.
+                {outlineViewMode === "human"
+                  ? "Проверьте и при необходимости поправьте план. Изменения можно вносить в текстовом виде или переключиться в JSON."
+                  : "Проверьте и при необходимости поправьте JSON-план. Если не начнёте редактировать, генерация стартует автоматически."}
               </div>
             </div>
-            <div className={`outline-auto-badge ${outlineApproval.autoEnabled && !outlineApproval.touched ? "is-active" : ""}`}>
-              {outlineApproval.autoEnabled && !outlineApproval.touched
-                ? `Автозапуск через ${outlineApproval.countdown} c`
-                : "Автозапуск остановлен"}
+            <div className="outline-approval-head-actions">
+              <div className="outline-view-toggle">
+                <button
+                  type="button"
+                  className={`secondary small ${outlineViewMode === "human" ? "is-active" : ""}`}
+                  onClick={() => setOutlineViewMode("human")}
+                  title="Удобный вид для правки цели выпуска и блоков"
+                >
+                  Текст (удобно править)
+                </button>
+                <button
+                  type="button"
+                  className={`secondary small ${outlineViewMode === "json" ? "is-active" : ""}`}
+                  onClick={() => setOutlineViewMode("json")}
+                  title="Исходный JSON для продвинутого редактирования"
+                >
+                  JSON
+                </button>
+              </div>
+              <div className={`outline-auto-badge ${outlineApproval.autoEnabled && !outlineApproval.touched ? "is-active" : ""}`}>
+                {outlineApproval.autoEnabled && !outlineApproval.touched
+                  ? `Автозапуск через ${outlineApproval.countdown} c`
+                  : "Автозапуск остановлен"}
+              </div>
             </div>
           </div>
-          <textarea
-            className="outline-editor"
-            value={outlineApproval.text}
-            rows={14}
-            spellCheck={false}
-            onChange={(e) => {
-              const nextText = e.target.value;
-              outlineAutoTriggeredRef.current = false;
-              setOutlineApproval((prev) =>
-                prev
-                  ? {
-                      ...prev,
-                      text: nextText,
-                      touched: true,
-                      autoEnabled: false,
-                    }
-                  : prev
-              );
-            }}
-          />
+          {outlineViewMode === "human" ? (
+            <OutlineHumanForm
+              text={outlineApproval.text}
+              onFocusField={() => {
+                outlineEditingRef.current = true;
+              }}
+              onTextChange={(nextText) => {
+                outlineAutoTriggeredRef.current = false;
+                outlineEditingRef.current = true;
+                setOutlineApproval((prev) =>
+                  prev ? { ...prev, text: nextText, touched: true, autoEnabled: false } : prev
+                );
+              }}
+              onInvalidJson={() => setOutlineViewMode("json")}
+            />
+          ) : (
+            <textarea
+              className="outline-editor"
+              value={outlineApproval.text}
+              rows={14}
+              spellCheck={false}
+              onFocus={() => {
+                outlineEditingRef.current = true;
+              }}
+              onChange={(e) => {
+                const nextText = e.target.value;
+                outlineAutoTriggeredRef.current = false;
+                outlineEditingRef.current = true;
+                setOutlineApproval((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        text: nextText,
+                        touched: true,
+                        autoEnabled: false,
+                      }
+                    : prev
+                );
+              }}
+            />
+          )}
           <div className="action-inline-group">
             <button type="button" onClick={() => approveOutlineAndGenerate(false)} disabled={scriptBusy}>
               Запустить по плану

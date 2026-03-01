@@ -165,6 +165,13 @@ function normalizeConfidenceBreakdown(raw) {
   };
 }
 
+const CONFIDENCE_TOOLTIPS = {
+  reliability: "Надежность: агрегированная оценка качества ответа",
+  retrieval: "Поиск: насколько релевантные фрагменты документа найдены для ответа",
+  coverage: "Покрытие: насколько ответ подтверждён цитатами из документа",
+  grounding: "Опора: насколько формулировки ответа опираются на источник, а не на общие знания модели",
+};
+
 function formatConfidenceBreakdownInline(raw) {
   const b = normalizeConfidenceBreakdown(raw);
   if (!b) return "";
@@ -2545,13 +2552,13 @@ export default function ChatPanel({
               {(lastVoiceResult.question_text || "").length > 160 ? "..." : ""}
             </span>
             {typeof lastVoiceResult.confidence === "number" && (
-              <span>Надежность: {Math.round(lastVoiceResult.confidence * 100)}%</span>
+              <span title={CONFIDENCE_TOOLTIPS.reliability}>Надежность: {Math.round(lastVoiceResult.confidence * 100)}%</span>
             )}
             {lastVoiceResult.confidence_breakdown && (
               <>
-                <span>Поиск: {Math.round((lastVoiceResult.confidence_breakdown.retrieval_quality || 0) * 100)}%</span>
-                <span>Покрытие: {Math.round((lastVoiceResult.confidence_breakdown.evidence_coverage || 0) * 100)}%</span>
-                <span>Опора: {Math.round((lastVoiceResult.confidence_breakdown.answer_grounding || 0) * 100)}%</span>
+                <span title={CONFIDENCE_TOOLTIPS.retrieval}>Поиск: {Math.round((lastVoiceResult.confidence_breakdown.retrieval_quality || 0) * 100)}%</span>
+                <span title={CONFIDENCE_TOOLTIPS.coverage}>Покрытие: {Math.round((lastVoiceResult.confidence_breakdown.evidence_coverage || 0) * 100)}%</span>
+                <span title={CONFIDENCE_TOOLTIPS.grounding}>Опора: {Math.round((lastVoiceResult.confidence_breakdown.answer_grounding || 0) * 100)}%</span>
               </>
             )}
           </div>

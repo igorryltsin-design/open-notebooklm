@@ -18,6 +18,8 @@ import {
   updatePostprocessSettings,
   getOcrSettings,
   updateOcrSettings,
+  getVisionIngestSettings,
+  updateVisionIngestSettings,
   getPronunciationOverrides,
   updatePronunciationOverrides,
   clearDatabase,
@@ -175,6 +177,16 @@ export default function SettingsPanel({
     true_peak_db: -1.5,
     lra: 11,
   });
+  const [visionIngest, setVisionIngest] = useState({
+    enabled: false,
+    base_url: "http://localhost:1234",
+    model: "",
+    timeout_seconds: 60,
+    max_images_per_document: 20,
+  });
+  const [savingVisionIngest, setSavingVisionIngest] = useState(false);
+  const [savedVisionIngest, setSavedVisionIngest] = useState(false);
+  const [saveVisionIngestError, setSaveVisionIngestError] = useState(null);
   const [ocr, setOcr] = useState({
     enabled: true,
     mode: "fast",
@@ -241,8 +253,9 @@ export default function SettingsPanel({
       getPostprocessSettings(),
       getOcrSettings(),
       listMusicFiles(),
+      getVisionIngestSettings(),
     ])
-      .then(([s, v, roleLlmRes, p, m, pp, ocrCfg, mf]) => {
+      .then(([s, v, roleLlmRes, p, m, pp, ocrCfg, mf, visionCfg]) => {
         setSettings(s);
         setVoices(v);
         const loadedRoleLlmMap = (roleLlmRes && roleLlmRes.role_llm_map) || {};
@@ -255,6 +268,7 @@ export default function SettingsPanel({
         if (pp) setPost(pp);
         if (ocrCfg) setOcr(ocrCfg);
         setMusicFiles((mf && mf.files) || []);
+        if (visionCfg) setVisionIngest(visionCfg);
         setLoading(false);
       })
       .catch(() => setLoading(false));
@@ -748,6 +762,23 @@ export default function SettingsPanel({
       setTimeout(() => setSaveOcrError(null), 8000);
     } finally {
       setSavingOcr(false);
+    }
+  }
+
+  async function handleSaveVisionIngest() {
+    setSavingVisionIngest(true);
+    setSavedVisionIngest(false);
+    setSaveVisionIngestError(null);
+    try {
+      const updated = await updateVisionIngestSettings(visionIngest);
+      setVisionIngest(updated);
+      setSavedVisionIngest(true);
+      setTimeout(() => setSavedVisionIngest(false), 3000);
+    } catch (e) {
+      setSaveVisionIngestError(e.message || "Ошибка сохранения настроек Vision ingest");
+      setTimeout(() => setSaveVisionIngestError(null), 8000);
+    } finally {
+      setSavingVisionIngest(false);
     }
   }
 
@@ -1275,6 +1306,70 @@ export default function SettingsPanel({
           <div className="settings-inline-error">
             <span>{saveOcrError}</span>
             <button type="button" className="secondary small" onClick={() => setSaveOcrError(null)}>Закрыть</button>
+          </div>
+        )}
+      </div>
+
+      <div className="voices-section">
+        <h4>Описание изображений через Vision LLM (ingest)</h4>
+        <p className="voices-hint">При индексации PDF/DOCX/PPTX изображения отправляются в vision-модель (например Gemma 3) для текстового описания; описание вставляется в текст документа. В Docker укажите Base URL <code>http://host.docker.internal:1234</code>, если LM Studio запущен на хосте.</p>
+        <div className="settings-grid">
+          <label className="checkbox-inline" title="Включить описание изображений при ingest">
+            <input
+              type="checkbox"
+              checked={!!visionIngest.enabled}
+              onChange={(e) => setVisionIngest({ ...visionIngest, enabled: e.target.checked })}
+            />
+            <span className="checkbox-text">Включить описание изображений через Vision LLM</span>
+          </label>
+          <label title="Base URL LM Studio (без /v1); для vision используется /api/v1/chat">
+            <span className="label-text">Base URL</span>
+            <input
+              type="text"
+              value={visionIngest.base_url || "http://localhost:1234"}
+              onChange={(e) => setVisionIngest({ ...visionIngest, base_url: e.target.value })}
+              placeholder="http://localhost:1234"
+            />
+          </label>
+          <label title="Идентификатор vision-модели в LM Studio (например google/gemma-3n-e4b)">
+            <span className="label-text">Модель (vision)</span>
+            <input
+              type="text"
+              value={visionIngest.model || ""}
+              onChange={(e) => setVisionIngest({ ...visionIngest, model: e.target.value })}
+              placeholder="модель с поддержкой изображений"
+            />
+          </label>
+          <label title="Таймаут одного запроса к vision-модели (секунды)">
+            <span className="label-text">Таймаут (с)</span>
+            <input
+              type="number"
+              min={5}
+              max={300}
+              value={visionIngest.timeout_seconds ?? 60}
+              onChange={(e) => setVisionIngest({ ...visionIngest, timeout_seconds: parseInt(e.target.value, 10) || 60 })}
+            />
+          </label>
+          <label title="Максимум изображений на документ для описания">
+            <span className="label-text">Макс. изображений на документ</span>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={visionIngest.max_images_per_document ?? 20}
+              onChange={(e) => setVisionIngest({ ...visionIngest, max_images_per_document: parseInt(e.target.value, 10) || 20 })}
+            />
+          </label>
+        </div>
+        <div className="settings-actions">
+          <button type="button" onClick={handleSaveVisionIngest} disabled={savingVisionIngest}>
+            {savingVisionIngest ? "Сохранение…" : savedVisionIngest ? "Vision ingest сохранён!" : "Сохранить Vision ingest"}
+          </button>
+        </div>
+        {saveVisionIngestError && (
+          <div className="settings-inline-error">
+            <span>{saveVisionIngestError}</span>
+            <button type="button" className="secondary small" onClick={() => setSaveVisionIngestError(null)}>Закрыть</button>
           </div>
         )}
       </div>

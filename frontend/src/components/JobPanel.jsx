@@ -127,6 +127,9 @@ export default function JobPanel({ jobId, label, documentId = null, artifactKind
         <div className="fill" style={{ width: `${progress}%` }} />
       </div>
       <span className="progress-label">{progress}%</span>
+      {job?.progress_message && (
+        <p className="progress-message" aria-live="polite">{job.progress_message}</p>
+      )}
       {hasLaneMeta && (
         <div className="job-runtime-meta" aria-label="Метаданные очереди">
           <span className="job-meta-chip">
@@ -158,16 +161,23 @@ export default function JobPanel({ jobId, label, documentId = null, artifactKind
             )}
           </div>
         )}
-        {documentId && (
-          <button type="button" className="secondary small" onClick={checkArtifacts} disabled={artifactBusy}>
-            {artifactBusy ? "Проверка…" : "Проверить артефакты"}
-          </button>
-        )}
       </div>
 
       {status === "done" && outputPaths && outputPaths.length > 0 && (
         <details className="job-downloads" open>
           <summary>Артефакты ({outputPaths.length})</summary>
+          {artifactKind === "audio" && outputPaths[0] && (
+            <div className="job-audio-player-wrap">
+              <audio
+                className="job-audio-player"
+                controls
+                preload="metadata"
+                src={downloadUrl(outputPaths[0].split("/").pop())}
+              >
+                Ваш браузер не поддерживает воспроизведение аудио.
+              </audio>
+            </div>
+          )}
           <div className="download-links">
             {outputPaths.map((p, i) => {
               const filename = p.split("/").pop();

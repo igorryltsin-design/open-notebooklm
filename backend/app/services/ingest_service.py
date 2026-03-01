@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
+from typing import Callable
+
+TYPE_PROGRESS_CB = Callable[[int, int], None]  # (current, total); total=0 means unknown
 import re
 import shutil
 import subprocess
@@ -18,7 +22,7 @@ from PIL import Image, UnidentifiedImageError
 from pptx import Presentation
 import trafilatura
 
-from app.config import ALLOW_REMOTE_URL_INGEST, LOCAL_ONLY, OUTPUTS_DIR, get_ocr_settings
+from app.config import ALLOW_REMOTE_URL_INGEST, LOCAL_ONLY, OUTPUTS_DIR, get_ocr_settings, get_vision_ingest_settings
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,39 @@ PPTX_TABLE_MAX_PER_SLIDE = 8
 PPTX_TABLE_MAX_ROWS = 24
 PPTX_TABLE_MAX_COLS = 10
 PPTX_FIGURE_CAPTION_MAX_PER_SLIDE = 8
+# Vision ingest: skip very small images (icons, thumbnails)
+VISION_MIN_SIDE_PX = 64
+VISION_MIN_PIXELS = 2500
+# PDF: skip images in header/footer (fraction of page height from top/bottom)
+VISION_PDF_HEADER_FRAC = 0.12
+VISION_PDF_FOOTER_FRAC = 0.12
+
+
+def _vision_skip_small_image(width: int, height: int) -> bool:
+    """Return True if image is too small to send to vision LLM."""
+    if width <= 0 or height <= 0:
+        return True
+    if width < VISION_MIN_SIDE_PX and height < VISION_MIN_SIDE_PX:
+        return True
+    if width * height < VISION_MIN_PIXELS:
+        return True
+    return False
+
+
+def _vision_pdf_skip_header_footer(rect_y0: float, rect_y1: float, page_height: float) -> bool:
+    """Return True if image rect is entirely in header or footer zone (skip it)."""
+    if page_height <= 0:
+        return False
+    top_cut = page_height * VISION_PDF_HEADER_FRAC
+    bottom_cut = page_height * (1 - VISION_PDF_FOOTER_FRAC)
+    # In PDF coordinates y often grows upward; in PyMuPDF Rect, y0 is top, y1 is bottom in page coords
+    if rect_y1 <= top_cut:
+        return True  # entirely in header
+    if rect_y0 >= bottom_cut:
+        return True  # entirely in footer
+    return False
+
+
 _PDF_MARKER_RE = re.compile(r"^\[(?:OCR\s+)?PDF page\s+\d+\]$", flags=re.IGNORECASE)
 _DOCX_HEADING_STYLE_RE = re.compile(r"(?:^|\s)(?:heading|заголовок)\s*([1-6])?\b", flags=re.IGNORECASE)
 _TABLE_CAPTION_RE = re.compile(
@@ -62,19 +99,21 @@ DJVU_SUFFIXES = {".djvu", ".djv", ".djvy"}
 PREVIEWABLE_CONVERT_SUFFIXES = OFFICE_WORD_SUFFIXES | OFFICE_PRESENTATION_SUFFIXES | DJVU_SUFFIXES
 
 
-def parse_file(path: Path) -> str:
-    """Return plain-text content from a PDF, office document, DJVU, text, or saved HTML."""
+def parse_file(path: Path, *, progress_cb: TYPE_PROGRESS_CB | None = None) -> str:
+    """Return plain-text content from a PDF, office document, DJVU, text, or saved HTML.
+    If progress_cb is set, it is called during vision image processing as progress_cb(current, total); total=0 means unknown.
+    """
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        return _parse_pdf(path)
+        return _parse_pdf(path, progress_cb=progress_cb)
     if suffix == ".docx":
-        return _parse_docx(path)
+        return _parse_docx(path, progress_cb=progress_cb)
     if suffix == ".pptx":
-        return _parse_pptx(path)
+        return _parse_pptx(path, progress_cb=progress_cb)
     if suffix in {".doc", ".rtf", ".odt", ".otd", ".ppt"}:
-        return _parse_via_preview_pdf(path)
+        return _parse_via_preview_pdf(path, progress_cb=progress_cb)
     if suffix in DJVU_SUFFIXES:
-        return _parse_via_preview_pdf(path)
+        return _parse_via_preview_pdf(path, progress_cb=progress_cb)
     if suffix in (".txt", ".md", ".rst"):
         return path.read_text(encoding="utf-8", errors="replace")
     if suffix in (".html", ".htm"):
@@ -106,14 +145,14 @@ def ensure_preview_pdf(path: Path, *, document_id: str | None = None) -> Path:
     raise ValueError(f"Preview is not supported for {suffix}")
 
 
-def _parse_via_preview_pdf(path: Path) -> str:
+def _parse_via_preview_pdf(path: Path, *, progress_cb: TYPE_PROGRESS_CB | None = None) -> str:
     with tempfile.TemporaryDirectory(prefix="ingest-preview-") as tmp:
         pdf_path = ensure_preview_pdf(path, document_id=Path(tmp, path.stem).name)
         if pdf_path.parent == OUTPUTS_DIR:
             temp_pdf = Path(tmp) / f"{path.stem}.pdf"
             shutil.copy2(pdf_path, temp_pdf)
             pdf_path = temp_pdf
-        return _parse_pdf(pdf_path)
+        return _parse_pdf(pdf_path, progress_cb=progress_cb)
 
 
 def _preview_output_path(document_id: str | None, source_path: Path) -> Path:
@@ -227,11 +266,267 @@ def _ocr_runtime_settings() -> dict:
         "max_docx_images": max(1, _safe_int(cfg.get("max_docx_images", OCR_DEFAULT_MAX_DOCX_IMAGES), OCR_DEFAULT_MAX_DOCX_IMAGES)),
     }
 
-def _parse_pdf(path: Path) -> str:
+def _count_pdf_vision_candidates(path: Path, max_total: int) -> int:
+    """Count how many PDF images will be sent to vision (for progress N/M). PyMuPDF only."""
+    try:
+        import fitz
+    except ImportError:
+        return 0
+    try:
+        doc = fitz.open(str(path))
+        seen_hashes: set[str] = set()
+        count = 0
+        for page_no in range(len(doc)):
+            if count >= max_total:
+                break
+            page = doc[page_no]
+            page_height = page.rect.height
+            for img in doc.get_page_images(page_no):
+                if count >= max_total:
+                    break
+                xref = img[0]
+                try:
+                    rects = page.get_image_rects(xref)
+                    if rects and _vision_pdf_skip_header_footer(rects[0].y0, rects[0].y1, page_height):
+                        continue
+                except Exception:
+                    pass
+                info = doc.extract_image(xref)
+                if not info:
+                    continue
+                raw = info.get("image")
+                w = info.get("width", 0)
+                h = info.get("height", 0)
+                if not raw or _vision_skip_small_image(w, h):
+                    continue
+                hsh = hashlib.sha256(raw).hexdigest()
+                if hsh not in seen_hashes:
+                    seen_hashes.add(hsh)
+                    count += 1
+            try:
+                blocks = page.get_text("dict", flags=0).get("blocks") or []
+            except Exception:
+                blocks = []
+            for blk in blocks:
+                if count >= max_total:
+                    break
+                if blk.get("type") != 1 or "image" not in blk:
+                    continue
+                raw_inline = blk.get("image")
+                if not raw_inline or len(raw_inline) < 100:
+                    continue
+                bbox = blk.get("bbox")
+                if bbox and len(bbox) >= 4 and page_height > 0:
+                    if _vision_pdf_skip_header_footer(bbox[1], bbox[3], page_height):
+                        continue
+                try:
+                    pil_img = Image.open(io.BytesIO(raw_inline))
+                    iw, ih = pil_img.size
+                    pil_img.close()
+                except Exception:
+                    iw, ih = 0, 0
+                if _vision_skip_small_image(iw, ih):
+                    continue
+                hsh = hashlib.sha256(raw_inline).hexdigest()
+                if hsh not in seen_hashes:
+                    seen_hashes.add(hsh)
+                    count += 1
+        doc.close()
+        return count
+    except Exception:
+        return 0
+
+
+def _extract_pdf_vision_descriptions(
+    path: Path,
+    *,
+    progress_cb: TYPE_PROGRESS_CB | None = None,
+) -> dict[int, list[str]]:
+    """Extract embedded images from PDF pages, describe via vision LLM; return page_idx -> list of description blocks.
+    Prefers PyMuPDF (exact embedded image bytes, no crop). Falls back to pdfplumber crop if PyMuPDF unavailable.
+    """
+    vision_cfg = get_vision_ingest_settings()
+    logger.info("Vision ingest (PDF): entry for %s (enabled=%s)", path.name, vision_cfg.get("enabled"))
+    if not vision_cfg.get("enabled"):
+        return {}
+    max_total = max(1, int(vision_cfg.get("max_images_per_document", 20)))
+    logger.info("Vision ingest (PDF): enabled, max %s images, scanning %s", max_total, path.name)
+    page_vision_blocks: dict[int, list[str]] = {}
+    try:
+        from app.services import llm_service
+    except ImportError:
+        return {}
+
+    # 1) Prefer PyMuPDF: extract embedded images by xref (no crop, finds all images)
+    try:
+        import fitz
+    except ImportError:
+        fitz = None
+        logger.debug("Vision ingest (PDF): PyMuPDF not installed, using pdfplumber")
+    if fitz is not None:
+        try:
+            total_to_process = _count_pdf_vision_candidates(path, max_total)
+            doc = fitz.open(str(path))
+            xref_to_desc: dict[int, str] = {}
+            image_hash_to_desc: dict[str, str] = {}  # dedupe: same image as xref and inline only sent once
+            total_described = 0
+            for page_no in range(len(doc)):
+                if total_described >= max_total:
+                    break
+                page_idx = page_no + 1
+                page = doc[page_no]
+                page_height = page.rect.height
+                imglist = doc.get_page_images(page_no)
+                for img_idx, img in enumerate(imglist):
+                    if total_described >= max_total:
+                        break
+                    xref = img[0]
+                    try:
+                        rects = page.get_image_rects(xref)
+                        if rects and _vision_pdf_skip_header_footer(rects[0].y0, rects[0].y1, page_height):
+                            logger.debug("PDF vision (PyMuPDF): skip header/footer image page %s xref %s", page_idx, xref)
+                            continue
+                    except Exception:
+                        pass
+                    if xref in xref_to_desc:
+                        page_vision_blocks.setdefault(page_idx, []).append(
+                            f"[PDF page {page_idx}, изображение {img_idx + 1}]\nОписание: {xref_to_desc[xref]}"
+                        )
+                        continue
+                    info = doc.extract_image(xref)
+                    if not info:
+                        continue
+                    raw = info.get("image")
+                    w = info.get("width", 0)
+                    h = info.get("height", 0)
+                    if not raw or _vision_skip_small_image(w, h):
+                        if raw:
+                            logger.debug("PDF vision (PyMuPDF): skip small image page %s xref %s (%sx%s)", page_idx, xref, w, h)
+                        continue
+                    content_hash = hashlib.sha256(raw).hexdigest()
+                    if content_hash in image_hash_to_desc:
+                        desc = image_hash_to_desc[content_hash]
+                        xref_to_desc[xref] = desc
+                        page_vision_blocks.setdefault(page_idx, []).append(
+                            f"[PDF page {page_idx}, изображение {img_idx + 1}]\nОписание: {desc}"
+                        )
+                        continue
+                    ext = (info.get("ext") or "png").lower()
+                    mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+                    desc = llm_service.describe_image_with_vision(raw, mime_type=mime)
+                    if desc:
+                        xref_to_desc[xref] = desc
+                        image_hash_to_desc[content_hash] = desc
+                        logger.info("Vision ingest: adding description to PDF page %s image %s (%s chars)", page_idx, img_idx + 1, len(desc))
+                        page_vision_blocks.setdefault(page_idx, []).append(
+                            f"[PDF page {page_idx}, изображение {img_idx + 1}]\nОписание: {desc}"
+                        )
+                        total_described += 1
+                        if progress_cb:
+                            progress_cb(total_described, total_to_process)
+                # Inline images (no xref): often diagrams that get_page_images misses; dedupe by content hash
+                try:
+                    blocks = page.get_text("dict", flags=0).get("blocks") or []
+                except Exception:
+                    blocks = []
+                for blk in blocks:
+                    if total_described >= max_total:
+                        break
+                    if blk.get("type") != 1 or "image" not in blk:
+                        continue
+                    raw_inline = blk.get("image")
+                    if not raw_inline or len(raw_inline) < 100:
+                        continue
+                    bbox = blk.get("bbox")
+                    if bbox and len(bbox) >= 4 and page_height > 0:
+                        if _vision_pdf_skip_header_footer(bbox[1], bbox[3], page_height):
+                            continue
+                    try:
+                        pil_img = Image.open(io.BytesIO(raw_inline))
+                        iw, ih = pil_img.size
+                        pil_img.close()
+                    except Exception:
+                        iw, ih = 0, 0
+                    if _vision_skip_small_image(iw, ih):
+                        continue
+                    content_hash_inline = hashlib.sha256(raw_inline).hexdigest()
+                    if content_hash_inline in image_hash_to_desc:
+                        desc_inline = image_hash_to_desc[content_hash_inline]
+                        page_vision_blocks.setdefault(page_idx, []).append(
+                            f"[PDF page {page_idx}, изображение (схема/диаграмма)]\nОписание: {desc_inline}"
+                        )
+                        continue
+                    mime_inline = "image/png"
+                    desc_inline = llm_service.describe_image_with_vision(raw_inline, mime_type=mime_inline)
+                    if desc_inline:
+                        image_hash_to_desc[content_hash_inline] = desc_inline
+                        page_vision_blocks.setdefault(page_idx, []).append(
+                            f"[PDF page {page_idx}, изображение (схема/диаграмма)]\nОписание: {desc_inline}"
+                        )
+                        total_described += 1
+                        if progress_cb:
+                            progress_cb(total_described, total_to_process)
+            doc.close()
+            if total_described or xref_to_desc:
+                logger.info("Vision ingest (PDF): PyMuPDF found %s unique image(s), described %s", len(xref_to_desc), total_described)
+                return page_vision_blocks
+            logger.info("Vision ingest (PDF): PyMuPDF found no images, trying pdfplumber")
+        except Exception as exc:
+            logger.info("Vision ingest (PDF): PyMuPDF failed, falling back to pdfplumber: %s", exc)
+
+    # 2) Fallback: pdfplumber (crop by bbox — may miss or crop wrong on some PDFs)
+    total = 0
+    total_found = 0
+    with pdfplumber.open(path) as pdf:
+        for page_idx, page in enumerate(pdf.pages, start=1):
+            if total >= max_total:
+                break
+            imgs = getattr(page, "images", None) or []
+            total_found += len(imgs)
+            for img_idx, img_info in enumerate(imgs):
+                if total >= max_total:
+                    break
+                try:
+                    x0 = float(img_info.get("x0", 0))
+                    top = float(img_info.get("top", 0))
+                    x1 = float(img_info.get("x1", 0))
+                    bottom = float(img_info.get("bottom", 0))
+                    if x1 <= x0 or bottom <= top:
+                        continue
+                    cropped = page.crop((x0, top, x1, bottom))
+                    pil_img = cropped.to_image(resolution=160).original
+                except Exception as exc:
+                    logger.debug("PDF vision: crop/render failed page %s img %s: %s", page_idx, img_idx, exc)
+                    continue
+                if _vision_skip_small_image(pil_img.width, pil_img.height):
+                    logger.debug("PDF vision: skip small image page %s img %s (%sx%s)", page_idx, img_idx, pil_img.width, pil_img.height)
+                    continue
+                buf = io.BytesIO()
+                try:
+                    pil_img.save(buf, format="PNG")
+                    raw = buf.getvalue()
+                except Exception as exc:
+                    logger.debug("PDF vision: save PNG failed: %s", exc)
+                    continue
+                desc = llm_service.describe_image_with_vision(raw, mime_type="image/png")
+                if desc:
+                    page_vision_blocks.setdefault(page_idx, []).append(
+                        f"[PDF page {page_idx}, изображение {img_idx + 1}]\nОписание: {desc}"
+                    )
+                    total += 1
+                    if progress_cb:
+                        progress_cb(total, 0)
+    if total_found or total:
+        logger.info("Vision ingest (PDF): pdfplumber found %s image(s), described %s", total_found, total)
+    return page_vision_blocks
+
+
+def _parse_pdf(path: Path, *, progress_cb: TYPE_PROGRESS_CB | None = None) -> str:
     ocr_cfg = _ocr_runtime_settings()
     page_blocks: list[tuple[int, str]] = []
     page_table_blocks: dict[int, list[str]] = {}
     page_figure_blocks: dict[int, list[str]] = {}
+    page_vision_blocks: dict[int, list[str]] = {}
     ocr_blocks: list[str] = []
     with pdfplumber.open(path) as pdf:
         for page_idx, page in enumerate(pdf.pages, start=1):
@@ -264,6 +559,7 @@ def _parse_pdf(path: Path) -> str:
             cleaned = _clean_ocr_text(ocr_text, min_chars=int(ocr_cfg["min_chars"]))
             if cleaned:
                 ocr_blocks.append(f"[OCR PDF page {page_idx}]\n{cleaned}")
+    page_vision_blocks = _extract_pdf_vision_descriptions(path, progress_cb=progress_cb)
     cleaned_page_blocks = _prepare_pdf_page_blocks(page_blocks)
     final_page_texts: dict[int, str] = {}
     for page_idx, cleaned_text in cleaned_page_blocks:
@@ -273,11 +569,20 @@ def _parse_pdf(path: Path) -> str:
         captions_to_strip = _extract_captions_from_structured_blocks(page_table_blocks.get(page_idx) or [])
         captions_to_strip.extend(_extract_captions_from_structured_blocks(fig_blocks or []))
         final_page_texts[page_idx] = _strip_caption_lines_from_text_block(cleaned_text, captions_to_strip)
+    # Include every page that has text, tables, figures, or vision blocks (pages with only images were missing)
+    all_page_indices: set[int] = set()
+    for page_idx, text in cleaned_page_blocks:
+        if text and text.strip():
+            all_page_indices.add(page_idx)
+    for page_idx in page_vision_blocks:
+        all_page_indices.add(page_idx)
+    for page_idx in page_table_blocks:
+        all_page_indices.add(page_idx)
+    for page_idx in page_figure_blocks:
+        all_page_indices.add(page_idx)
     pages = [
-        # Keep explicit page markers in the plain text so downstream chunk metadata
-        # can reconstruct page references for RAG citations.
         (
-            f"[PDF page {page_idx}]\n{(final_page_texts.get(page_idx) or text)}"
+            f"[PDF page {page_idx}]\n{(final_page_texts.get(page_idx) or '')}"
             + (
                 "\n\n" + "\n\n".join(page_table_blocks.get(page_idx) or [])
                 if page_table_blocks.get(page_idx)
@@ -288,17 +593,22 @@ def _parse_pdf(path: Path) -> str:
                 if page_figure_blocks.get(page_idx)
                 else ""
             )
+            + (
+                "\n\n" + "\n\n".join(page_vision_blocks.get(page_idx) or [])
+                if page_vision_blocks.get(page_idx)
+                else ""
+            )
         )
-        for page_idx, text in cleaned_page_blocks
-        if text and text.strip()
+        for page_idx in sorted(all_page_indices)
     ]
     if ocr_blocks:
         pages.append("\n\n".join(ocr_blocks))
     return "\n\n".join(pages)
 
 
-def _parse_docx(path: Path) -> str:
+def _parse_docx(path: Path, *, progress_cb: TYPE_PROGRESS_CB | None = None) -> str:
     ocr_cfg = _ocr_runtime_settings()
+    vision_cfg = get_vision_ingest_settings()
     doc = DocxDocument(str(path))
     parts: list[str] = []
     for p in doc.paragraphs:
@@ -311,15 +621,117 @@ def _parse_docx(path: Path) -> str:
             parts.append(f"{'#' * heading_level} {txt}")
         else:
             parts.append(txt)
-    if ocr_cfg["enabled"]:
-        ocr_blocks = _extract_docx_image_ocr(path, ocr_cfg=ocr_cfg)
+    if ocr_cfg["enabled"] or vision_cfg.get("enabled"):
+        ocr_blocks = _extract_docx_image_ocr(path, ocr_cfg=ocr_cfg, progress_cb=progress_cb)
         if ocr_blocks:
             parts.append("\n\n".join(ocr_blocks))
     return _inject_section_anchor_markers("\n\n".join(parts), scope_prefix="docx")
 
 
-def _parse_pptx(path: Path) -> str:
-    prs = Presentation(str(path))
+def _extract_pptx_vision_descriptions(
+    prs: Presentation,
+    *,
+    progress_cb: TYPE_PROGRESS_CB | None = None,
+) -> dict[int, list[str]]:
+    """Extract picture shapes from PPTX slides, describe via vision LLM; return slide_idx -> list of blocks."""
+    vision_cfg = get_vision_ingest_settings()
+    if not vision_cfg.get("enabled"):
+        return {}
+    try:
+        from pptx.enum.shapes import MSO_SHAPE_TYPE
+    except (ImportError, AttributeError):
+        return {}
+    max_total = max(1, int(vision_cfg.get("max_images_per_document", 20)))
+    slide_vision_blocks: dict[int, list[str]] = {}
+    total = 0
+    try:
+        from app.services import llm_service
+    except ImportError:
+        return {}
+    for slide_idx, slide in enumerate(prs.slides, start=1):
+        if total >= max_total:
+            break
+        for shape in getattr(slide, "shapes", []) or []:
+            if total >= max_total:
+                break
+            try:
+                if getattr(shape, "shape_type", None) != MSO_SHAPE_TYPE.PICTURE:
+                    continue
+                img = getattr(shape, "image", None)
+                if not img:
+                    continue
+                raw = getattr(img, "blob", None)
+                if not raw:
+                    continue
+                content_type = getattr(img, "content_type", None) or "image/png"
+                if content_type and "/" in str(content_type):
+                    mime = str(content_type).strip()
+                else:
+                    mime = _mime_for_image_path(f".{getattr(img, 'ext', 'png')}")
+            except Exception as exc:
+                logger.debug("PPTX vision: get image failed slide %s: %s", slide_idx, exc)
+                continue
+            try:
+                pil_check = Image.open(io.BytesIO(raw))
+                pw, ph = pil_check.size
+                pil_check.close()
+            except (UnidentifiedImageError, OSError):
+                pw, ph = 0, 0
+            if _vision_skip_small_image(pw, ph):
+                logger.debug("PPTX vision: skip small image slide %s (%sx%s)", slide_idx, pw, ph)
+                continue
+            desc = llm_service.describe_image_with_vision(raw, mime_type=mime)
+            if desc:
+                slide_vision_blocks.setdefault(slide_idx, []).append(
+                    f"[PPTX слайд {slide_idx}, изображение]\nОписание: {desc}"
+                )
+                total += 1
+                if progress_cb:
+                    progress_cb(total, 0)
+    return slide_vision_blocks
+
+
+def _pptx_fallback_text_from_zip(path: Path) -> str:
+    """Extract slide text from PPTX as zip when python-pptx fails (e.g. SVG without content-type)."""
+    parts: list[str] = []
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            slide_names = sorted(n for n in zf.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml"))
+            for idx, name in enumerate(slide_names, start=1):
+                try:
+                    xml = zf.read(name).decode("utf-8", errors="replace")
+                except Exception:
+                    continue
+                # OOXML text in <a:t>...</a:t>
+                texts = re.findall(r"<a:t>([^<]*)</a:t>", xml)
+                line = " ".join(t.strip() for t in texts if t.strip())
+                if line:
+                    parts.append(f"Слайд {idx}\n{line}")
+    except Exception as exc:
+        logger.debug("PPTX zip fallback failed: %s", exc)
+    return "\n\n".join(parts) if parts else ""
+
+
+def _parse_pptx(path: Path, *, progress_cb: TYPE_PROGRESS_CB | None = None) -> str:
+    try:
+        prs = Presentation(str(path))
+    except KeyError as e:
+        logger.warning("PPTX open failed (e.g. SVG without content-type): %s. Using zip fallback.", e)
+        fallback = _pptx_fallback_text_from_zip(path)
+        if fallback:
+            return fallback
+        raise ValueError(
+            "Презентация содержит неподдерживаемые элементы (например SVG без типа контента). "
+            "Пересохраните файл в PowerPoint или экспортируйте в PDF."
+        ) from e
+    except Exception as e:
+        logger.warning("PPTX open failed: %s. Using zip fallback.", e)
+        fallback = _pptx_fallback_text_from_zip(path)
+        if fallback:
+            return fallback
+        raise ValueError(f"Не удалось открыть презентацию: {e!s}") from e
+
+    slide_vision_blocks = _extract_pptx_vision_descriptions(prs, progress_cb=progress_cb)
     slides_text: list[str] = []
     for idx, slide in enumerate(prs.slides, start=1):
         parts: list[str] = []
@@ -346,6 +758,8 @@ def _parse_pptx(path: Path) -> str:
             combined_parts.extend(table_blocks)
         if figure_blocks:
             combined_parts.extend(figure_blocks)
+        for block in slide_vision_blocks.get(idx) or []:
+            combined_parts.append(block)
         if combined_parts:
             slides_text.append(f"Слайд {idx}\n" + "\n\n".join(combined_parts))
     return "\n\n".join(slides_text)
@@ -1100,27 +1514,96 @@ def _ocr_image_with_tesseract(
             return ""
 
 
-def _extract_docx_image_ocr(path: Path, *, ocr_cfg: dict | None = None) -> list[str]:
+def _mime_for_image_path(name: str) -> str:
+    ext = (Path(name).suffix or "").lower()
+    if ext in (".png",):
+        return "image/png"
+    if ext in (".jpg", ".jpeg",):
+        return "image/jpeg"
+    if ext in (".webp",):
+        return "image/webp"
+    return "image/png"
+
+
+def _docx_collect_image_parts(part: object, seen: set, out: list[tuple[bytes, str]]) -> None:
+    """Recursively collect image blobs from document part and related_parts (python-docx)."""
+    try:
+        related = getattr(part, "related_parts", None) or {}
+    except Exception:
+        return
+    for _rId, rel_part in related.items():
+        try:
+            part_id = id(rel_part)
+            if part_id in seen:
+                continue
+            seen.add(part_id)
+            ct = (getattr(rel_part, "content_type", None) or "").strip().lower()
+            if ct.startswith("image/"):
+                blob = getattr(rel_part, "blob", None) or getattr(rel_part, "_blob", None)
+                if blob and len(blob) > 0:
+                    out.append((bytes(blob), ct))
+            _docx_collect_image_parts(rel_part, seen, out)
+        except Exception:
+            continue
+
+
+def _extract_docx_image_ocr(
+    path: Path,
+    *,
+    ocr_cfg: dict | None = None,
+    progress_cb: TYPE_PROGRESS_CB | None = None,
+) -> list[str]:
     cfg = ocr_cfg or _ocr_runtime_settings()
     max_images = max(1, int(cfg.get("max_docx_images", OCR_DEFAULT_MAX_DOCX_IMAGES)))
     lang = str(cfg.get("lang", OCR_DEFAULT_LANG))
     mode = str(cfg.get("mode", OCR_DEFAULT_MODE))
     min_chars = max(1, int(cfg.get("min_chars", OCR_DEFAULT_MIN_CHARS)))
+    vision_cfg = get_vision_ingest_settings()
+    vision_enabled = bool(vision_cfg.get("enabled"))
+    vision_max = max(1, min(max_images, int(vision_cfg.get("max_images_per_document", 20)))) if vision_enabled else 0
+    if vision_enabled:
+        logger.info("Vision ingest (DOCX): enabled, max %s images", vision_max)
+
     blocks: list[str] = []
+    # Collect (raw_bytes, mime) from document part relations first, then zip
+    image_items: list[tuple[bytes, str]] = []
     try:
-        with zipfile.ZipFile(path, "r") as zf:
-            media_files = [name for name in zf.namelist() if name.startswith("word/media/")]
-            for idx, name in enumerate(media_files[:max_images], start=1):
+        doc = DocxDocument(str(path))
+        _docx_collect_image_parts(doc.part, set(), image_items)
+    except Exception as exc:
+        logger.debug("DOCX part images: %s", exc)
+    if not image_items:
+        image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".tif")
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                media_files = [n for n in zf.namelist() if n.startswith("word/media/")]
+                if not media_files:
+                    media_files = [
+                        n for n in zf.namelist()
+                        if Path(n).suffix.lower() in image_exts and not n.startswith("__")
+                    ]
+                for name in media_files[:max_images]:
+                    try:
+                        raw = zf.read(name)
+                        mime = _mime_for_image_path(name)
+                        image_items.append((raw, mime))
+                    except Exception:
+                        continue
+        except Exception as exc:
+            logger.debug("DOCX zip images: %s", exc)
+    if vision_enabled and image_items:
+        logger.info("Vision ingest (DOCX): found %s image(s) in %s", len(image_items), path.name)
+    try:
+        for idx, (raw, mime) in enumerate(image_items[:max_images], start=1):
+            try:
+                img = Image.open(io.BytesIO(raw))
+            except (UnidentifiedImageError, OSError):
+                continue
+            img_w, img_h = img.size
+            ocr_text = ""
+            if cfg.get("enabled", True):
                 try:
-                    raw = zf.read(name)
-                except Exception:
-                    continue
-                try:
-                    img = Image.open(io.BytesIO(raw))
-                except (UnidentifiedImageError, OSError):
-                    continue
-                try:
-                    text = _clean_ocr_text(
+                    ocr_text = _clean_ocr_text(
                         _ocr_image_with_tesseract(img, lang=lang, mode=mode),
                         min_chars=min_chars,
                     )
@@ -1129,8 +1612,34 @@ def _extract_docx_image_ocr(path: Path, *, ocr_cfg: dict | None = None) -> list[
                         img.close()
                     except Exception:
                         pass
-                if text:
-                    blocks.append(f"[OCR DOCX image {idx}: {Path(name).name}]\n{text}")
+            else:
+                try:
+                    img.close()
+                except Exception:
+                    pass
+
+            vision_desc = None
+            if vision_enabled and idx <= vision_max and not _vision_skip_small_image(img_w, img_h):
+                try:
+                    from app.services import llm_service
+                    vision_desc = llm_service.describe_image_with_vision(raw, mime_type=mime)
+                    if vision_desc is None and ocr_text:
+                        logger.info("Vision ingest (DOCX): image %s — LLM не вернул описание, в блоке только OCR", idx)
+                except Exception as exc:
+                    logger.debug("Vision description for DOCX image %s failed: %s", idx, exc)
+
+            if not ocr_text and not vision_desc:
+                continue
+            # Сначала описание от vision (основное), затем OCR с подписью, чтобы оба не терялись
+            parts = [f"[DOCX image {idx}]"]
+            if vision_desc:
+                logger.info("Vision ingest: adding description to DOCX image %s (%s chars)", idx, len(vision_desc))
+                parts.append(f"Описание изображения: {vision_desc}")
+            if ocr_text:
+                parts.append(f"Текст с изображения (OCR): {ocr_text}")
+            blocks.append("\n".join(parts))
+            if progress_cb:
+                progress_cb(idx, len(image_items))
     except Exception as exc:
         logger.debug("DOCX image OCR failed: %s", exc)
     return blocks

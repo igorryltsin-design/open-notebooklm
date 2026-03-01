@@ -261,6 +261,7 @@ async def update_job(
     *,
     status: Optional[JobStatus] = None,
     progress: Optional[int] = None,
+    progress_message: Optional[str] = None,
     lane: Optional[str] = None,
     output_paths: Optional[list[str]] = None,
     error: Optional[str] = None,
@@ -274,6 +275,8 @@ async def update_job(
             job.status = status
         if progress is not None:
             job.progress = progress
+        if progress_message is not None:
+            job.progress_message = progress_message
         if lane is not None:
             job.lane = lane
         if output_paths is not None:

@@ -35,6 +35,8 @@ from app.config import (
     update_postprocess_settings,
     get_ocr_settings,
     update_ocr_settings,
+    get_vision_ingest_settings,
+    update_vision_ingest_settings,
     get_role_llm_overrides,
     update_role_llm_overrides,
     get_style_profiles,
@@ -51,6 +53,7 @@ from app.models import (
     MusicSettings,
     OcrSettings,
     PostprocessSettings,
+    VisionIngestSettings,
     PodcastScriptRequest,
     PodcastScriptResponse,
     RoleLlmSettingsResponse,
@@ -77,6 +80,9 @@ router = APIRouter(prefix="/api")
 
 # In-memory store for parsed texts & scripts (keyed by document_id)
 _texts: dict[str, str] = {}
+# Document IDs currently being parsed by an ingest job (avoids duplicate parse_file + vision calls)
+_parsing_document_ids: set[str] = set()
+PARSED_TEXTS_DIR = DATA_DIR / "parsed_texts"
 _scripts: dict[str, list] = {}
 _script_meta: dict[str, dict] = {}
 _MAX_SCRIPT_VERSIONS = 24
@@ -331,9 +337,34 @@ def _parse_voice_document_ids_form(default_document_id: str, raw_document_ids: s
     return out
 
 
+def _parsed_text_path(document_id: str) -> Path:
+    return PARSED_TEXTS_DIR / f"{document_id}.txt"
+
+
+def _load_parsed_text_from_disk(document_id: str) -> str | None:
+    path = _parsed_text_path(document_id)
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+
+
+def _save_parsed_text_to_disk(document_id: str, text: str) -> None:
+    PARSED_TEXTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _parsed_text_path(document_id)
+    path.write_text(text or "", encoding="utf-8")
+
+
 def _load_document_text(document_id: str) -> str:
+    """Return cached, disk-cached, or freshly parsed document text. Do not call while document is in _parsing_document_ids."""
     text = _texts.get(document_id)
     if text is None:
+        text = _load_parsed_text_from_disk(document_id)
+        if text is not None:
+            _texts[document_id] = text
+            return str(text)
         file_path = _find_document_input_path(document_id)
         if not file_path or not file_path.exists():
             raise HTTPException(404, "Исходный файл документа не найден")
@@ -342,6 +373,7 @@ def _load_document_text(document_id: str) -> str:
         except ValueError as e:
             raise HTTPException(400, str(e))
         _texts[document_id] = text
+        _save_parsed_text_to_disk(document_id, text)
     return str(text or "")
 
 
@@ -981,6 +1013,13 @@ async def get_document_fulltext(
     if not doc:
         raise HTTPException(404, "Документ не найден")
 
+    # Wait if ingest is currently parsing this document to avoid duplicate vision API calls
+    wait_end = asyncio.get_event_loop().time() + 600.0
+    while document_id in _parsing_document_ids and asyncio.get_event_loop().time() < wait_end:
+        await asyncio.sleep(0.5)
+    if document_id in _parsing_document_ids:
+        raise HTTPException(503, "Документ ещё индексируется, повторите запрос через минуту")
+
     text = _load_document_text(document_id)
     total = len(text)
     slice_start, slice_end, reason = _resolve_fulltext_window(
@@ -1093,6 +1132,12 @@ async def delete_document(document_id: str):
     _scripts.pop(document_id, None)
     _script_meta.pop(document_id, None)
     rag_service.delete_document_index(document_id)
+    parsed_path = _parsed_text_path(document_id)
+    if parsed_path.exists():
+        try:
+            parsed_path.unlink()
+        except OSError:
+            pass
     for p in INPUTS_DIR.glob(f"{document_id}.*"):
         try:
             if p.is_dir():
@@ -1388,63 +1433,103 @@ async def ingest_job(document_id: str, background_tasks: BackgroundTasks):
     job_id = await job_manager.create_job()
 
     async def _task():
-        await job_manager.update_job(job_id, progress=3)
+        await job_manager.update_job(job_id, progress=3, progress_message=None)
         file_path = candidates[0]
+        # Mark as parsing so fulltext endpoint does not start a second parse_file (duplicate vision calls)
+        _parsing_document_ids.add(document_id)
+        try:
+            # Always re-parse on ingest job so vision runs again and progress is shown (no cache)
+            _texts.pop(document_id, None)
 
-        if document_id not in _texts:
+            parse_progress_q: Queue[tuple[int, int]] = Queue()
+
+            def _vision_progress(current: int, total: int) -> None:
+                parse_progress_q.put((current, total))
+
             try:
-                text = ingest_service.parse_file(file_path)
+                parse_fut = asyncio.create_task(
+                    asyncio.to_thread(ingest_service.parse_file, file_path, progress_cb=_vision_progress)
+                )
+                while not parse_fut.done():
+                    try:
+                        cur, tot = parse_progress_q.get_nowait()
+                        if tot and tot > 0:
+                            p = 3 + int(9 * cur / tot)
+                            msg = f"Обработка изображений: {cur}/{tot}"
+                        else:
+                            p = 3 + min(8, cur)
+                            msg = f"Обработка изображений: {cur}…" if cur else None
+                        await job_manager.update_job(
+                            job_id,
+                            progress=max(3, min(12, p)),
+                            progress_message=msg,
+                        )
+                    except Empty:
+                        pass
+                    await asyncio.sleep(0.25)
+                while True:
+                    try:
+                        cur, tot = parse_progress_q.get_nowait()
+                        if tot and tot > 0:
+                            msg = f"Обработка изображений: {cur}/{tot}"
+                        else:
+                            msg = f"Обработка изображений: {cur}…" if cur else None
+                        await job_manager.update_job(job_id, progress=12, progress_message=msg)
+                    except Empty:
+                        break
+                text = await parse_fut
             except ValueError as e:
                 raise HTTPException(400, str(e))
             _texts[document_id] = text
-        else:
-            text = _texts[document_id]
+            _save_parsed_text_to_disk(document_id, text)
 
-        await job_manager.update_job(job_id, progress=12)
-        chunks = rag_service.chunk_text(text)
-        if not chunks:
-            raise HTTPException(400, "Не удалось извлечь текст для индексации: документ пустой или не распознан.")
+            await job_manager.update_job(job_id, progress=12, progress_message=None)
+            chunks = rag_service.chunk_text(text)
+            if not chunks:
+                raise HTTPException(400, "Не удалось извлечь текст для индексации: документ пустой или не распознан.")
 
-        progress_q: Queue[tuple[int, int]] = Queue()
+            progress_q: Queue[tuple[int, int]] = Queue()
 
-        def _progress(done: int, total: int) -> None:
-            progress_q.put((done, total))
+            def _progress(done: int, total: int) -> None:
+                progress_q.put((done, total))
 
-        async def _index_and_track() -> int:
-            fut = asyncio.create_task(
-                asyncio.to_thread(
-                    rag_service.index_document_with_progress,
-                    document_id,
-                    chunks,
-                    batch_size=32,
-                    progress_cb=_progress,
+            async def _index_and_track() -> int:
+                fut = asyncio.create_task(
+                    asyncio.to_thread(
+                        rag_service.index_document_with_progress,
+                        document_id,
+                        chunks,
+                        batch_size=32,
+                        progress_cb=_progress,
+                    )
                 )
-            )
-            while not fut.done():
-                try:
-                    done, total = progress_q.get_nowait()
-                    frac = done / max(1, total)
-                    p = 12 + int(frac * 84)
-                    await job_manager.update_job(job_id, progress=max(12, min(96, p)))
-                except Empty:
-                    pass
-                await asyncio.sleep(0.2)
+                while not fut.done():
+                    try:
+                        done, total = progress_q.get_nowait()
+                        frac = done / max(1, total)
+                        p = 12 + int(frac * 84)
+                        await job_manager.update_job(job_id, progress=max(12, min(96, p)))
+                    except Empty:
+                        pass
+                    await asyncio.sleep(0.2)
 
-            # flush pending events
-            while True:
-                try:
-                    done, total = progress_q.get_nowait()
-                    frac = done / max(1, total)
-                    p = 12 + int(frac * 84)
-                    await job_manager.update_job(job_id, progress=max(12, min(96, p)))
-                except Empty:
-                    break
-            return await fut
+                # flush pending events
+                while True:
+                    try:
+                        done, total = progress_q.get_nowait()
+                        frac = done / max(1, total)
+                        p = 12 + int(frac * 84)
+                        await job_manager.update_job(job_id, progress=max(12, min(96, p)))
+                    except Empty:
+                        break
+                return await fut
 
-        n = await _index_and_track()
-        document_store.update_document(document_id, ingested=True, chunks=n)
-        await job_manager.update_job(job_id, progress=100)
-        return [f"chunks:{n}"]
+            n = await _index_and_track()
+            document_store.update_document(document_id, ingested=True, chunks=n)
+            await job_manager.update_job(job_id, progress=100, progress_message=None)
+            return [f"chunks:{n}"]
+        finally:
+            _parsing_document_ids.discard(document_id)
 
     background_tasks.add_task(job_manager.run_job, job_id, _task(), lane="ingest")
     return {"job_id": job_id}
@@ -3278,6 +3363,24 @@ async def put_ocr(body: OcrSettings):
     return OcrSettings(**updated)
 
 
+@router.get("/settings/vision_ingest", response_model=VisionIngestSettings)
+async def get_vision_ingest():
+    cur = get_vision_ingest_settings()
+    return VisionIngestSettings(
+        enabled=cur["enabled"],
+        base_url=cur["base_url"],
+        model=cur["model"] or "",
+        timeout_seconds=cur["timeout_seconds"],
+        max_images_per_document=cur["max_images_per_document"],
+    )
+
+
+@router.put("/settings/vision_ingest", response_model=VisionIngestSettings)
+async def put_vision_ingest(body: VisionIngestSettings):
+    updated = update_vision_ingest_settings(body.model_dump())
+    return VisionIngestSettings(**updated)
+
+
 @router.get("/settings/style_profiles")
 async def get_style_profiles_api():
     return {"profiles": get_style_profiles()}
@@ -3348,6 +3451,7 @@ async def clear_database(body: dict):
         )
 
     _texts.clear()
+    _parsing_document_ids.clear()
     _scripts.clear()
     _script_meta.clear()
 
@@ -3355,6 +3459,8 @@ async def clear_database(body: dict):
     removed_inputs = _wipe_dir_contents(INPUTS_DIR)
     removed_outputs = _wipe_dir_contents(OUTPUTS_DIR)
     removed_index = _wipe_dir_contents(INDEX_DIR)
+    if PARSED_TEXTS_DIR.exists():
+        _wipe_dir_contents(PARSED_TEXTS_DIR)
 
     document_store.clear_all_documents()
     chat_store.clear_all_history()

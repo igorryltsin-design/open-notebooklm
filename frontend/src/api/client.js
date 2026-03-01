@@ -995,6 +995,18 @@ export async function updateOcrSettings(payload) {
   });
 }
 
+export async function getVisionIngestSettings() {
+  return request("/settings/vision_ingest");
+}
+
+export async function updateVisionIngestSettings(payload) {
+  return request("/settings/vision_ingest", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function getStyleProfiles() {
   return request("/settings/style_profiles");
 }

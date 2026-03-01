@@ -150,6 +150,7 @@ class JobInfo(BaseModel):
     job_id: str
     status: JobStatus
     progress: int = Field(default=0, ge=0, le=100)
+    progress_message: Optional[str] = None
     lane: str = "default"
     lane_limit: int | None = None
     lane_running: int | None = None
@@ -223,3 +224,11 @@ class OcrSettings(BaseModel):
     min_chars: int = Field(default=8, ge=1, le=120)
     max_pdf_pages: int = Field(default=40, ge=1, le=500)
     max_docx_images: int = Field(default=40, ge=1, le=500)
+
+
+class VisionIngestSettings(BaseModel):
+    enabled: bool = False
+    base_url: str = "http://localhost:1234"
+    model: str = ""
+    timeout_seconds: int = Field(default=60, ge=5, le=300)
+    max_images_per_document: int = Field(default=20, ge=1, le=100)

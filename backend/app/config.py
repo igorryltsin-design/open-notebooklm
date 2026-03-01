@@ -24,7 +24,17 @@ for d in (INPUTS_DIR, INDEX_DIR, OUTPUTS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 # --- YAML loader ----------------------------------------------------------
-CONFIG_YAML_PATH = Path(os.getenv("CONFIG_YAML", str(BASE_DIR / "config.yaml")))
+def _resolve_config_path() -> Path:
+    if os.getenv("CONFIG_YAML"):
+        return Path(os.getenv("CONFIG_YAML", "")).resolve()
+    # Prefer data/config.yaml when running locally so vision_ingest and other runtime config are shared
+    data_config = DATA_DIR / "config.yaml"
+    if data_config.exists():
+        return data_config
+    return BASE_DIR / "config.yaml"
+
+
+CONFIG_YAML_PATH = _resolve_config_path()
 
 
 def _load_yaml() -> dict:
@@ -134,6 +144,22 @@ if OCR_SETTINGS["mode"] not in {"fast", "accurate"}:
 OCR_SETTINGS["min_chars"] = max(1, min(120, int(OCR_SETTINGS["min_chars"])))
 OCR_SETTINGS["max_pdf_pages"] = max(1, min(500, int(OCR_SETTINGS["max_pdf_pages"])))
 OCR_SETTINGS["max_docx_images"] = max(1, min(500, int(OCR_SETTINGS["max_docx_images"])))
+
+# --- Vision ingest (describe images with VLM; mutable at runtime) ----------
+_vision_cfg = _cfg.get("vision_ingest", {})
+_vision_base = str(_vision_cfg.get("base_url", "")).strip() or None
+if not _vision_base and _lmstudio_cfg.get("base_url"):
+    _b = str(_lmstudio_cfg.get("base_url", "")).strip().rstrip("/")
+    _vision_base = _b.replace("/v1", "") if "/v1" in _b else _b
+VISION_INGEST_SETTINGS: dict[str, object] = {
+    "enabled": bool(_vision_cfg.get("enabled", False)),
+    "base_url": _vision_base or "http://localhost:1234",
+    "model": str(_vision_cfg.get("model", "")).strip() or str(_lmstudio_cfg.get("model", "local-model")),
+    "timeout_seconds": max(5, min(300, int(_vision_cfg.get("timeout_seconds", 60)))),
+    "max_images_per_document": max(1, min(100, int(_vision_cfg.get("max_images_per_document", 20)))),
+}
+VISION_INGEST_SETTINGS["timeout_seconds"] = max(5, min(300, int(VISION_INGEST_SETTINGS["timeout_seconds"])))
+VISION_INGEST_SETTINGS["max_images_per_document"] = max(1, min(100, int(VISION_INGEST_SETTINGS["max_images_per_document"])))
 
 # --- Embeddings -----------------------------------------------------------
 EMBEDDING_MODEL: str = os.getenv(
@@ -419,6 +445,46 @@ def update_ocr_settings(payload: dict) -> dict:
     cfg["ocr"] = dict(next_cfg)
     _save_yaml(cfg)
     return get_ocr_settings()
+
+
+def get_vision_ingest_settings() -> dict:
+    """Return current vision ingest (VLM image description) settings."""
+    return {
+        "enabled": bool(VISION_INGEST_SETTINGS.get("enabled", False)),
+        "base_url": str(VISION_INGEST_SETTINGS.get("base_url", "http://localhost:1234")).strip(),
+        "model": str(VISION_INGEST_SETTINGS.get("model", "")).strip() or LMSTUDIO_MODEL,
+        "timeout_seconds": max(5, min(300, int(VISION_INGEST_SETTINGS.get("timeout_seconds", 60)))),
+        "max_images_per_document": max(1, min(100, int(VISION_INGEST_SETTINGS.get("max_images_per_document", 20)))),
+    }
+
+
+def update_vision_ingest_settings(payload: dict) -> dict:
+    """Update vision ingest settings in memory and persist to config.yaml."""
+    global VISION_INGEST_SETTINGS
+    cur = get_vision_ingest_settings()
+
+    def _to_int(value, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
+
+    next_cfg = {
+        "enabled": bool(payload.get("enabled", cur["enabled"])),
+        "base_url": str(payload.get("base_url", cur["base_url"])).strip() or cur["base_url"],
+        "model": str(payload.get("model", cur["model"])).strip() or cur["model"],
+        "timeout_seconds": max(5, min(300, _to_int(payload.get("timeout_seconds", cur["timeout_seconds"]), int(cur["timeout_seconds"])))),
+        "max_images_per_document": max(1, min(100, _to_int(payload.get("max_images_per_document", cur["max_images_per_document"]), int(cur["max_images_per_document"])))),
+    }
+
+    VISION_INGEST_SETTINGS.clear()
+    VISION_INGEST_SETTINGS.update(next_cfg)
+
+    cfg = _load_yaml()
+    cfg.setdefault("vision_ingest", {})
+    cfg["vision_ingest"] = dict(next_cfg)
+    _save_yaml(cfg)
+    return get_vision_ingest_settings()
 
 
 def get_role_llm_overrides() -> dict[str, dict[str, str]]:

@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import "./ConfirmDialog.css";
 
 export default function ConfirmDialog({
@@ -13,7 +14,7 @@ export default function ConfirmDialog({
 }) {
   if (!open) return null;
 
-  return (
+  const dialog = (
     <div className="confirm-overlay" onClick={onCancel}>
       <div
         className={`confirm-dialog ${danger ? "confirm-dialog--danger" : ""}`}
@@ -35,4 +36,6 @@ export default function ConfirmDialog({
       </div>
     </div>
   );
+
+  return createPortal(dialog, document.body);
 }
